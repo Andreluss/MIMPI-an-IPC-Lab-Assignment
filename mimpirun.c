@@ -5,5 +5,5 @@
 #include "mimpi_common.h"
 
 int main() {
-    TODO
+    
 }
