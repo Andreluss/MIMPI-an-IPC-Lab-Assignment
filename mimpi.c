@@ -8,7 +8,7 @@
 
 void MIMPI_Init(bool enable_deadlock_detection) {
     channels_init();
-
+    print_open_descriptors();
     TODO
 }
 

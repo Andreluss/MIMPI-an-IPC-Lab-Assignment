@@ -48,8 +48,89 @@ _Noreturn extern void fatal(const char* fmt, ...);
 /////////////////////////////////////////////
 // Put your declarations here
 
+/* -------------- Helper functions ---------------- */
+int get_pipe_write_fd(int i, int j, int n);
+int get_pipe_read_fd(int i, int j, int n);
 
 
 
+/* ------------------ Helper macros ----------------- */
+
+#define ASSERT_SPRINTF_OK(expr)                                                             \
+    do {                                                                                   \
+        int const _res = (expr);                                                            \
+        if (_res < 0)                                                                       \
+            syserr(                                                                        \
+                "Failed: %s\n\tIn function %s() in %s line %d.\n\tErrno: ",                \
+                #expr, __func__, __FILE__, __LINE__                                        \
+            );                                                                             \
+    } while(0)
+
+
+
+
+/* -------------- Debug functions ---------------- */
+
+// Print (to stderr) information about all open descriptors in current process.
+void print_open_descriptors(void);
+
+
+/* ------------------ Debug macros ----------------- */
+#define dbg if (true)
+
+// def colors
+#define RESET   "\033[0m"
+#define RED     "\033[31m"      /* Red */
+#define GREEN   "\033[32m"      /* Green */
+#define YELLOW  "\033[33m"      /* Yellow */
+#define BLUE    "\033[34m"      /* Blue */
+#define MAGENTA "\033[35m"      /* Magenta */
+#define CYAN   "\033[36m"      /* Cyan */
+
+
+#define prt(...) \
+    do { \
+        char const *colors[] = {RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN}; \
+        int const colors_len = sizeof(colors) / sizeof(colors[0]);        \
+        int const color = rand() % colors_len;                            \
+        fprintf(stderr, "[%s][%d]: %s", __FILE__, __LINE__, colors[color]);         \
+        fprintf(stderr, __VA_ARGS__);                                     \
+        fprintf(stderr, RESET); \
+        fflush(stderr); \
+    } while (0)
+
+/*
+#define prt2(...) \
+    do { \
+        char const *colors[] = {RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN}; \
+        int const colors_len = sizeof(colors) / sizeof(colors[0]);        \
+        int const color = rand() % colors_len; \
+        fprintf(stderr, "%s", colors[color]);                             \
+        fprintf(stderr, "[debug]: ");         \
+        fprintf(stderr, RESET); \
+        fprintf(stderr, __VA_ARGS__);                                     \
+        fflush(stderr); \
+    } while (0)
+
+#define prt3(...) \
+    do { \
+        char const *colors[] = {RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN}; \
+        int const colors_len = sizeof(colors) / sizeof(colors[0]);        \
+        int const color = rand() % colors_len;                            \
+        fprintf(stderr, "%s", colors[color]);                             \
+        fprintf(stderr, __VA_ARGS__);                                     \
+        fprintf(stderr, RESET);                                           \
+        fflush(stderr); \
+    } while (0)
+*/
+
+// undef colors
+#undef RESET
+#undef RED
+#undef GREEN
+#undef YELLOW
+#undef BLUE
+#undef MAGENTA
+#undef CYAN
 
 #endif // MIMPI_COMMON_H
