@@ -45,7 +45,7 @@ _Noreturn void fatal(const char* fmt, ...)
 // Put your implementation here
 #include <dirent.h>
 
-void print_open_descriptors() {
+void print_open_descriptors(int n) {
     const int MAX_PATH_LENGTH = 1024;
     const char *path = "/proc/self/fd";
 
@@ -76,16 +76,33 @@ void print_open_descriptors() {
         if (strncmp(symlink_target, "/proc", 5) == 0)
             continue;
 
-        fprintf(stderr, "Pid %d file descriptor %3s -> %s\n",
-                getpid(), entry->d_name, symlink_target);
+        int desc_num = atoi(entry->d_name);
+        if (20 <= desc_num && desc_num <= 1023) {
+            int i = (desc_num / 2 - 100) / n;
+            int j = (desc_num / 2 - 100) % n;
+            char *type = (desc_num % 2 == 0) ? "write" : "read";
+            fprintf(stderr, "Pid %d file descriptor %3d -> %s (%d -> %d, %s)\n",
+                    getpid(), desc_num, symlink_target, i, j, type);
+        }
+        else {
+            fprintf(stderr, "Pid %d file descriptor %3s -> %s\n",
+                    getpid(), entry->d_name, symlink_target);
+        }
     }
     closedir(dr);
 }
 
+// Return fd for the (i-th process') writing end of the i -> j pipe.
 int get_pipe_write_fd(int i, int j, int n) {
     return 2 * (100 + i * n + j);
 }
 
+// Return fd for the (j-th process') reading end of the i -> j pipe.
 int get_pipe_read_fd(int i, int j, int n) {
     return 2 * (100 + i * n + j) + 1;
 }
+
+void get_mimpi_rank_for_pid_envariable_name(char *buf, int pid) {
+    ASSERT_SPRINTF_OK(sprintf(buf, "MIMPI_RANK_%d", pid)); // TODO error check?
+}
+

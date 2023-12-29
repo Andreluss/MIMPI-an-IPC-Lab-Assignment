@@ -51,8 +51,7 @@ _Noreturn extern void fatal(const char* fmt, ...);
 /* -------------- Helper functions ---------------- */
 int get_pipe_write_fd(int i, int j, int n);
 int get_pipe_read_fd(int i, int j, int n);
-
-
+void get_mimpi_rank_for_pid_envariable_name(char *buf, int pid);
 
 /* ------------------ Helper macros ----------------- */
 
@@ -72,12 +71,13 @@ int get_pipe_read_fd(int i, int j, int n);
 /* -------------- Debug functions ---------------- */
 
 // Print (to stderr) information about all open descriptors in current process.
-void print_open_descriptors(void);
+void print_open_descriptors(int);
 
 
 /* ------------------ Debug macros ----------------- */
 #define dbg if (true)
 
+#include <stdio.h>
 #define prt(...) \
     do { \
         char const *colors[] = {"\033[31m",  "\033[32m", "\033[33m", "\033[34m", "\033[35m", "\033[36m"}; \

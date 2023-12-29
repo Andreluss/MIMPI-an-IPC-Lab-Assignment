@@ -12,13 +12,14 @@
 // Create pipes for each pair of processes
 // and set their descriptor numbers.
 // pipe for i -> j communication has descriptors
-// write (i): 2*(100 + i * n + j)
-// read (j): 2*(100 + i * n + j) + 1
+// write (i): from get_pipe_write_fd(i, j, n), something like 2*(100 + i * n + j)
+// read (j): from get_pipe_read_fd(i, j, n), something like 2*(100 + i * n + j) + 1
 // instead of pipe, use channel.c functions and remember about dup2
 // Disclaimer: pipe i -> i is not created.
 static void create_channels(int n) {
     for (int i = 0; i < n; i++) {
-        for (int j = 0; j < n && i != j; j++) {
+        for (int j = 0; j < n; j++) if (i != j) {
+            dbg prt("Creating channel from %d to %d\n", i, j);
             int pipefd[2];
             ASSERT_SYS_OK(channel(pipefd));
 
@@ -41,11 +42,38 @@ static void create_channels(int n) {
     }
 }
 
-static void save_pid_to_rank_in_env(pid_t pid, int rank) {
-    char* env_var_name = malloc(12 + 10 + 1);
-    ASSERT_SPRINTF_OK(sprintf(env_var_name, "MIMPI_RANK_%d", pid));
+static void close_unnecessary_channels(int rank, int n) {
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < n; j++) if (i != j) {
+            int write_fd_num = get_pipe_write_fd(i, j, n);
+            int read_fd_num = get_pipe_read_fd(i, j, n);
+            if (i != rank && j != rank) {
+                // Pipe: i -> j and i, j != rank,
+                // so process rank doesn't read nor write from/to this pipe
+                dbg prt("Closing write_fd_num = %d\n", write_fd_num);
+                dbg prt("Closing read_fd_num = %d\n", read_fd_num);
+                ASSERT_SYS_OK(close(write_fd_num));
+                ASSERT_SYS_OK(close(read_fd_num));
+            } else if (i == rank) {
+                // Pipe: rank -> j
+                // process rank only wants to write, not read
+                dbg prt("Closing read_fd_num = %d\n", read_fd_num);
+                ASSERT_SYS_OK(close(read_fd_num));
+            } else if (j == rank) {
+                // Pipe: i -> rank
+                // process rank only wants to read, not write
+                dbg prt("Closing write_fd_num = %d\n", write_fd_num);
+                ASSERT_SYS_OK(close(write_fd_num));
+            }
+        }
+    }
+}
 
-    char* rank_str = malloc(10 + 1);
+static void save_pid_to_rank_in_env(pid_t pid, int rank) {
+    char env_var_name[32]; // MIMPI_RANK_[pid]
+    get_mimpi_rank_for_pid_envariable_name(env_var_name, pid);
+
+    char rank_str[16];
     ASSERT_SPRINTF_OK(sprintf(rank_str, "%d", rank));
 
     dbg prt("env_var_name = %s\n", env_var_name);
@@ -54,9 +82,6 @@ static void save_pid_to_rank_in_env(pid_t pid, int rank) {
     ASSERT_SYS_OK(setenv(env_var_name, rank_str, true));
 
     dbg prt("Testing: getenv(\"%s\") = %s\n", env_var_name, getenv(env_var_name));
-
-    free(rank_str);
-    free(env_var_name);
 }
 
 static void save_n_to_env(int n) {
@@ -79,8 +104,7 @@ int main(int argc, char** argv) {
     save_n_to_env(n);
 
     create_channels(n);
-
-    dbg print_open_descriptors();
+    dbg print_open_descriptors(n);
 
     for (int i = 0; i < n; i++) {
         pid_t pid; ASSERT_SYS_OK(pid = fork());
@@ -88,6 +112,9 @@ int main(int argc, char** argv) {
             // Child: save child's pid to environment variable
             // to make it accessible from the child even *after* calling execvp.
             save_pid_to_rank_in_env(getpid(), i);
+
+            // Close unnecessary channels.
+            close_unnecessary_channels(i, n);
 
             // Execute given program with execvp (this will overwrite the child's code)
             ASSERT_SYS_OK(execvp(argv[2], argv + 2));
