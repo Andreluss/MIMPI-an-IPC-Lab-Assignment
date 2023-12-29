@@ -78,24 +78,14 @@ void print_open_descriptors(void);
 /* ------------------ Debug macros ----------------- */
 #define dbg if (true)
 
-// def colors
-#define RESET   "\033[0m"
-#define RED     "\033[31m"      /* Red */
-#define GREEN   "\033[32m"      /* Green */
-#define YELLOW  "\033[33m"      /* Yellow */
-#define BLUE    "\033[34m"      /* Blue */
-#define MAGENTA "\033[35m"      /* Magenta */
-#define CYAN   "\033[36m"      /* Cyan */
-
-
 #define prt(...) \
     do { \
-        char const *colors[] = {RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN}; \
+        char const *colors[] = {"\033[31m",  "\033[32m", "\033[33m", "\033[34m", "\033[35m", "\033[36m"}; \
         int const colors_len = sizeof(colors) / sizeof(colors[0]);        \
         int const color = rand() % colors_len;                            \
         fprintf(stderr, "[%s][%d]: %s", __FILE__, __LINE__, colors[color]);         \
         fprintf(stderr, __VA_ARGS__);                                     \
-        fprintf(stderr, RESET); \
+        fprintf(stderr, "\033[0m"); \
         fflush(stderr); \
     } while (0)
 
@@ -123,14 +113,5 @@ void print_open_descriptors(void);
         fflush(stderr); \
     } while (0)
 */
-
-// undef colors
-#undef RESET
-#undef RED
-#undef GREEN
-#undef YELLOW
-#undef BLUE
-#undef MAGENTA
-#undef CYAN
 
 #endif // MIMPI_COMMON_H
