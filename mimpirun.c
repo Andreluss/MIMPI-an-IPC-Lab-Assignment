@@ -42,6 +42,17 @@ static void create_channels(int n) {
     }
 }
 
+void close_channels(int n) {
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < n; ++j) if (i != j) {
+                int write_fd_num = get_pipe_write_fd(i, j, n);
+                int read_fd_num = get_pipe_read_fd(i, j, n);
+                ASSERT_SYS_OK(close(write_fd_num));
+                ASSERT_SYS_OK(close(read_fd_num));
+        }
+    }
+}
+
 static void close_unnecessary_channels(int rank, int n) {
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < n; j++) if (i != j) {
@@ -122,7 +133,8 @@ int main(int argc, char** argv) {
         }
     }
 
-    // Parent: wait for each child.
+    // Parent: close all channels and wait for each child.
+    close_channels(n);
     for (int i = 0; i < n; ++i)
         ASSERT_SYS_OK(wait(NULL));
 

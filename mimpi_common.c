@@ -106,3 +106,21 @@ void get_mimpi_rank_for_pid_envariable_name(char *buf, int pid) {
     ASSERT_SPRINTF_OK(sprintf(buf, "MIMPI_RANK_%d", pid)); // TODO error check?
 }
 
+void get_pipe_fd_to_string(int fd, int n, char *buf, int buf_size) {
+    int ret;
+    if (20 <= fd && fd <= 1023) {
+        int i = (fd / 2 - 100) / n;
+        int j = (fd / 2 - 100) % n;
+        char *type = (fd % 2 == 0) ? "write" : "read";
+        ret = snprintf(buf, buf_size, "%d -> %d, %s\n", i, j, type);
+    }
+    else {
+        ret = snprintf(buf, buf_size, "[%d]", fd);
+    }
+
+    if (ret < 0 || ret >= buf_size) {
+        if (buf) *buf = '\0';
+        return;
+    }
+}
+

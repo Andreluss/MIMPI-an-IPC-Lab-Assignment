@@ -72,6 +72,7 @@ void get_mimpi_rank_for_pid_envariable_name(char *buf, int pid);
 
 // Print (to stderr) information about all open descriptors in current process.
 void print_open_descriptors(int);
+void get_pipe_fd_to_string(int fd, int n, char *buf, int buf_size);
 
 
 /* ------------------ Debug macros ----------------- */
@@ -82,7 +83,7 @@ void print_open_descriptors(int);
     do { \
         char const *colors[] = {"\033[31m",  "\033[32m", "\033[33m", "\033[34m", "\033[35m", "\033[36m"}; \
         int const colors_len = sizeof(colors) / sizeof(colors[0]);        \
-        int const color = rand() % colors_len;                            \
+        int const color = rand() % colors_len; \
         fprintf(stderr, "[%s][%d]: %s", __FILE__, __LINE__, colors[color]);         \
         fprintf(stderr, __VA_ARGS__);                                     \
         fprintf(stderr, "\033[0m"); \
