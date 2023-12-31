@@ -19,17 +19,17 @@
 static void create_channels(int n) {
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < n; j++) if (i != j) {
-            dbg prt("Creating channel from %d to %d\n", i, j);
+//            dbg prt("Creating channel from %d to %d\n", i, j);
             int pipefd[2];
             ASSERT_SYS_OK(channel(pipefd));
 
             int write_fd = pipefd[1];
             int read_fd = pipefd[0];
-            dbg prt("read_fd=%d write_fd = %d\n", read_fd, write_fd);
+//            dbg prt("read_fd=%d write_fd = %d\n", read_fd, write_fd);
 
             int write_fd_num = get_pipe_write_fd(i, j, n); // 2 * (100 + i * n + j);
             int read_fd_num = get_pipe_read_fd(i, j, n); // 2 * (100 + i * n + j) + 1;
-            dbg prt("read_fd_num=%d write_fd_num = %d\n", read_fd_num, write_fd_num);
+//            dbg prt("read_fd_num=%d write_fd_num = %d\n", read_fd_num, write_fd_num);
             assert(20 <= read_fd_num && read_fd_num <= 1023);
             assert(20 <= write_fd_num && write_fd_num <= 1023);
 
@@ -61,19 +61,19 @@ static void close_unnecessary_channels(int rank, int n) {
             if (i != rank && j != rank) {
                 // Pipe: i -> j and i, j != rank,
                 // so process rank doesn't read nor write from/to this pipe
-                dbg prt("Closing write_fd_num = %d\n", write_fd_num);
-                dbg prt("Closing read_fd_num = %d\n", read_fd_num);
+//                dbg prt("Closing write_fd_num = %d\n", write_fd_num);
+//                dbg prt("Closing read_fd_num = %d\n", read_fd_num);
                 ASSERT_SYS_OK(close(write_fd_num));
                 ASSERT_SYS_OK(close(read_fd_num));
             } else if (i == rank) {
                 // Pipe: rank -> j
                 // process rank only wants to write, not read
-                dbg prt("Closing read_fd_num = %d\n", read_fd_num);
+//                dbg prt("Closing read_fd_num = %d\n", read_fd_num);
                 ASSERT_SYS_OK(close(read_fd_num));
             } else if (j == rank) {
                 // Pipe: i -> rank
                 // process rank only wants to read, not write
-                dbg prt("Closing write_fd_num = %d\n", write_fd_num);
+//                dbg prt("Closing write_fd_num = %d\n", write_fd_num);
                 ASSERT_SYS_OK(close(write_fd_num));
             }
         }
@@ -103,13 +103,6 @@ static void save_n_to_env(int n) {
 }
 
 int main(int argc, char** argv) {
-    dbg {
-        for (int i = 0; i < argc; i++) {
-            printf("argv[%d] = %s\n", i, argv[i]);
-        }
-        fflush(stdout);
-    }
-
     // Get n - number of child processes.
     int n = atoi(argv[1]); dbg prt("n = %d\n", n);
     save_n_to_env(n);

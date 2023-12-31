@@ -40,7 +40,7 @@ static struct {
     bool* receiver_should_receive; // destroy in MIMPI_Finalize()
     /// This array contains mutexes that are used
     /// to synchronize the main thread and the receiver threads.
-    pthread_mutex_t* receiver_mutexes; // destroy in MIMPI_Finalize()
+//    pthread_mutex_t* receiver_mutexes; // destroy in MIMPI_Finalize()
 
     // <list of messages received from other processes is defined above>
 
@@ -152,10 +152,10 @@ void MIMPI_Init(bool enable_deadlock_detection) {
     dbg print_open_descriptors(mimpi.n);
 
     // Create mutexes for receiver threads
-    mimpi.receiver_mutexes = malloc(mimpi.n * sizeof(pthread_mutex_t));
-    for (int i = 0; i < mimpi.n; i++) {
-        ASSERT_ZERO(pthread_mutex_init(&mimpi.receiver_mutexes[i], NULL));
-    }
+//    mimpi.receiver_mutexes = malloc(mimpi.n * sizeof(pthread_mutex_t));
+//    for (int i = 0; i < mimpi.n; i++) {
+//        ASSERT_ZERO(pthread_mutex_init(&mimpi.receiver_mutexes[i], NULL));
+//    }
 
     // Create array of flags for receiver threads
     mimpi.receiver_should_receive = malloc(mimpi.n * sizeof(bool));
@@ -190,12 +190,12 @@ static void* channels_receiver_thread(void* _from_rank) {
     }
 
     while (true) {
-        ASSERT_ZERO(pthread_mutex_lock(&mimpi.receiver_mutexes[from_rank]));
-        if (!mimpi.receiver_should_receive[from_rank]) {
-            ASSERT_ZERO(pthread_mutex_unlock(&mimpi.receiver_mutexes[from_rank]));
-            break;
-        }
-        ASSERT_ZERO(pthread_mutex_unlock(&mimpi.receiver_mutexes[from_rank]));
+//        ASSERT_ZERO(pthread_mutex_lock(&mimpi.receiver_mutexes[from_rank]));
+//        if (!mimpi.receiver_should_receive[from_rank]) {
+//            ASSERT_ZERO(pthread_mutex_unlock(&mimpi.receiver_mutexes[from_rank]));
+//            break;
+//        }
+//        ASSERT_ZERO(pthread_mutex_unlock(&mimpi.receiver_mutexes[from_rank]));
 
         // (1) Read metadata message from the sender.
         mimpi_metadata_t metadata;
@@ -252,11 +252,12 @@ static void* channels_receiver_thread(void* _from_rank) {
         ASSERT_ZERO(pthread_mutex_unlock(&mimpi.mutex));
     }
 
-    // Thread is about to end. If the main process is waiting on MIMPI_Recv(),
+    // Thread is about to end.
+    // If the main process is waiting on MIMPI_Recv() on a message from from_rank,
     // then we should wake it up.
     ASSERT_ZERO(pthread_mutex_lock(&mimpi.mutex));
     dbg prt("Helper thread for %d -> %d is about to end\n", from_rank, mimpi.rank);
-    if (mimpi.is_waiting_on_recv) {
+    if (mimpi.is_waiting_on_recv && mimpi.recv_source == from_rank) {
         mimpi.received_message = NULL;
         mimpi.is_waiting_on_recv = false;
         ASSERT_ZERO(sem_post(&mimpi.recv_sem));
@@ -284,15 +285,15 @@ void MIMPI_Finalize() {
     // (this should stop the receiver threads even in the middle of reading!)
 
     // Tell all helper threads to stop receiving new messages.
-    for (int i = 0; i < mimpi.n; i++) {
-        if (i == mimpi.rank)
-            continue;
-        ASSERT_ZERO(pthread_mutex_lock(&mimpi.receiver_mutexes[i]));
-        mimpi.receiver_should_receive[i] = false;
-        ASSERT_ZERO(pthread_mutex_unlock(&mimpi.receiver_mutexes[i]));
-    }
+//    for (int i = 0; i < mimpi.n; i++) {
+//        if (i == mimpi.rank)
+//            continue;
+//        ASSERT_ZERO(pthread_mutex_lock(&mimpi.receiver_mutexes[i]));
+//        mimpi.receiver_should_receive[i] = false;
+//        ASSERT_ZERO(pthread_mutex_unlock(&mimpi.receiver_mutexes[i]));
+//    }
 
-    // Close all channels (pipes) related to this process.
+    // Close all channels (pipes) related to this process (this should stop the receiver threads).
     for (int i = 0; i < mimpi.n; i++) {
         if (i == mimpi.rank)
             continue;
@@ -317,10 +318,10 @@ void MIMPI_Finalize() {
     // Free all memory allocated in MIMPI_Init().
     free(mimpi.receiver_threads);
     free(mimpi.receiver_should_receive);
-    for (int i = 0; i < mimpi.n; i++) {
-        ASSERT_ZERO(pthread_mutex_destroy(&mimpi.receiver_mutexes[i]));
-    }
-    free(mimpi.receiver_mutexes);
+//    for (int i = 0; i < mimpi.n; i++) {
+//        ASSERT_ZERO(pthread_mutex_destroy(&mimpi.receiver_mutexes[i]));
+//    }
+//    free(mimpi.receiver_mutexes);
     ASSERT_ZERO(pthread_mutex_destroy(&mimpi.mutex));
     ASSERT_ZERO(sem_destroy(&mimpi.recv_sem));
     channels_finalize();
@@ -466,10 +467,12 @@ MIMPI_Retcode MIMPI_Recv(
         // -----------------------------------------------------------------
 
         ASSERT_ZERO(pthread_mutex_lock(&mimpi.mutex));
+        mimpi.is_waiting_on_recv = false;
         message = mimpi.received_message;
 
         // Case 1: An error occurred.
         if (message == NULL) {
+            dbg prt("////////// Rank %d Error after waiting to receive message", mimpi.rank);
             ASSERT_ZERO(pthread_mutex_unlock(&mimpi.mutex));
             return MIMPI_ERROR_REMOTE_FINISHED;
         }
