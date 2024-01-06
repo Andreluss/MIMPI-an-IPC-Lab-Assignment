@@ -79,7 +79,7 @@ void get_pipe_fd_to_string(int fd, int n, char *buf, int buf_size);
 // Different levels of debug:
 #define dbg if (false)
 #define d2g if (false)
-#define d3g if (true)
+#define d3g if (false)
 
 #include <stdio.h>
 #define prt(...) \

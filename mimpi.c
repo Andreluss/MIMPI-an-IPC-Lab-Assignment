@@ -7,16 +7,55 @@
 #include <pthread.h>
 #include <semaphore.h>
 #include <memory.h>
+#include <bits/stdint-uintn.h>
 #include "channel.h"
 #include "mimpi.h"
 #include "mimpi_common.h"
 
+// These tags should have distinct values:
 static const int MIMPI_BARRIER_WAIT_TAG = -1;
 static const int MIMPI_BARRIER_NOTIFY_TAG = -2;
 static const int MIMPI_BCAST_WAIT_TAG = -3;
-__attribute_maybe_unused__ static const int MIMPI_BCAST_NOTIFY_TAG = -4;
-static const int MIMPI_REDUCE_WAIT_TAG = -5;
-__attribute_maybe_unused__ static const int MIMPI_REDUCE_NOTIFY_TAG = -6;
+static const int MIMPI_BCAST_NOTIFY_TAG = -4;
+static const int MIMPI_REDUCE_NOTIFY_TAG = -5;
+static const int MIMPI_REDUCE_WAIT_PROD_TAG = -10;
+static const int MIMPI_REDUCE_WAIT_SUM_TAG = -11;
+static const int MIMPI_REDUCE_WAIT_MIN_TAG = -12;
+static const int MIMPI_REDUCE_WAIT_MAX_TAG = -13;
+static bool is_reduce_wait_tag(int tag) {
+    return tag == MIMPI_REDUCE_WAIT_PROD_TAG ||
+           tag == MIMPI_REDUCE_WAIT_SUM_TAG ||
+           tag == MIMPI_REDUCE_WAIT_MIN_TAG ||
+           tag == MIMPI_REDUCE_WAIT_MAX_TAG;
+}
+int get_reduce_wait_tag(MIMPI_Op op) {
+    switch (op) {
+        case MIMPI_PROD: return MIMPI_REDUCE_WAIT_PROD_TAG;
+        case MIMPI_SUM: return MIMPI_REDUCE_WAIT_SUM_TAG;
+        case MIMPI_MIN: return MIMPI_REDUCE_WAIT_MIN_TAG;
+        case MIMPI_MAX: return MIMPI_REDUCE_WAIT_MAX_TAG;
+        default: assert(false);
+    }
+}
+MIMPI_Op get_reduce_operation_type(int tag) {
+    // the following doesn't work, please use if statements:
+    if (tag == MIMPI_REDUCE_WAIT_PROD_TAG) return MIMPI_PROD;
+    if (tag == MIMPI_REDUCE_WAIT_SUM_TAG) return MIMPI_SUM;
+    if (tag == MIMPI_REDUCE_WAIT_MIN_TAG) return MIMPI_MIN;
+    if (tag == MIMPI_REDUCE_WAIT_MAX_TAG) return MIMPI_MAX;
+    assert(false);
+//    return (MIMPI_Op) (MIMPI_REDUCE_WAIT_PROD_TAG - tag);
+}
+uint8_t perform_operation(MIMPI_Op op, uint8_t a, uint8_t b) {
+    switch (op) {
+        case MIMPI_PROD: return a * b;
+        case MIMPI_SUM: return a + b;
+        case MIMPI_MIN: return a < b ? a : b;
+        case MIMPI_MAX: return a > b ? a : b;
+        default: assert(false);
+    }
+}
+
 typedef struct {
 //    enum {
 //        MIMPI_SEND,
@@ -258,6 +297,51 @@ static MIMPI_Retcode complete_chrecv(int fd, void* data, size_t bytes_to_read) {
     return MIMPI_SUCCESS;
 }
 
+static void merge_messages_inplace(received_message_t* main_message,
+                                   received_message_t* other_message) {
+    assert(main_message != NULL);
+    assert(other_message != NULL);
+    assert(main_message->metadata.count == other_message->metadata.count);
+    assert(main_message->metadata.tag == other_message->metadata.tag);
+    assert(is_reduce_wait_tag(main_message->metadata.tag));
+
+    int count = main_message->metadata.count;
+    uint8_t* main_data = main_message->data;
+    uint8_t* other_data = other_message->data;
+    MIMPI_Op op = get_reduce_operation_type(main_message->metadata.tag);
+    for (int i = 0; i < count; i++) {
+        main_data[i] = perform_operation(op, main_data[i], other_data[i]);
+    }
+}
+
+// Caller transfers the ownership of the message to this function.
+static void receiver_thread_handle_reduce_wait_message(received_message_t *message) {
+    ASSERT_ZERO(pthread_mutex_lock(&mimpi.mutex));
+    d3g prt("[REDUCE] Rank %d: Received REDUCE_WAIT from %d\n", mimpi.rank, message->metadata.source);
+
+    mimpi.group_synced_count++; assert(mimpi.group_synced_count <= mimpi.n);
+    bool sync_completed = (mimpi.group_synced_count == mimpi.n);
+    d3g prt("[REDUCE] synced_count = %d, completed = %d\n", mimpi.group_synced_count, sync_completed);
+
+    // If this was the 1st message, initialize the reduction.
+    if (mimpi.group_synced_count == 1) {
+        set_received_message(message); // Notice: we only care about the data part of the message
+    }
+    else { // Else, merge the result with the current result.
+        merge_messages_inplace(mimpi.received_message, message);
+        received_message_destroy(message);
+    }
+
+    ASSERT_ZERO(pthread_mutex_unlock(&mimpi.mutex));
+
+    if (sync_completed) {
+        assert(mimpi.state == MIMPI_STATE_GROUP_SYNCING);
+        assert(mimpi.is_waiting_on_semaphore);
+        d3g prt("Rank %d: Posting REDUCE semaphore\n", mimpi.rank);
+        ASSERT_ZERO(sem_post(&mimpi.semaphore));
+    }
+}
+
 /// @brief Thread function that continuously reads from pipe _source -> mimpi.rank.
 static void* receiver_thread(void* _source) {
     int source_rank = *((int*) _source); free(_source);
@@ -348,9 +432,9 @@ static void* receiver_thread(void* _source) {
                 ASSERT_ZERO(sem_post(&mimpi.semaphore));
             }
         }
-        else if (metadata.tag == MIMPI_REDUCE_WAIT_TAG){
+        else if (is_reduce_wait_tag(metadata.tag)) {
             // Sync/info message (doesn't unblock the main thread).
-            TODO
+            receiver_thread_handle_reduce_wait_message(message);
         }
         else {
             // Unblocking message (on which the main thread could be waiting).
@@ -890,6 +974,134 @@ MIMPI_Retcode MIMPI_Bcast(
     return MIMPI_SUCCESS;
 }
 
+MIMPI_Retcode handle_reduce_root(
+        void const *send_data,
+        void *recv_data,
+        int count,
+        MIMPI_Op op,
+        int root
+) {
+    assert(mimpi.rank == root);
+    // Create a dummy message.
+    received_message_t* message = malloc(sizeof(received_message_t));
+    received_message_init(message, (mimpi_metadata_t) {
+            .count = count,
+            .source = mimpi.rank,
+            .tag = get_reduce_wait_tag(op)
+    }, malloc(count));
+    memcpy(message->data, send_data, count);
+
+    ASSERT_ZERO(pthread_mutex_lock(&mimpi.mutex));
+    mimpi.group_synced_count++;
+    mimpi.state = MIMPI_STATE_GROUP_SYNCING;
+    bool should_wait = (mimpi.group_synced_count < mimpi.n);
+    mimpi.is_waiting_on_semaphore = should_wait;
+
+    // If this was the 1st message, initialize the reduction.
+    if (mimpi.group_synced_count == 1) {
+        set_received_message(message); // Notice: we only care about the data part of the message
+    }
+    else { // Else, merge the result with the current result.
+        merge_messages_inplace(mimpi.received_message, message);
+        received_message_destroy(message);
+    }
+
+    ASSERT_ZERO(pthread_mutex_unlock(&mimpi.mutex));
+
+    if (should_wait) {
+        ASSERT_ZERO(sem_wait(&mimpi.semaphore));
+        mimpi.is_waiting_on_semaphore = false;
+    }
+
+    // Case 1: An error occurred.
+    if (mimpi.group_synced_count < mimpi.n || mimpi.received_message == NULL) {
+        d3g prt("[REDUCE] Rank %d error after waiting for sync, "
+                "group_synced_count = %d, received_message = %p\n",
+               mimpi.rank, mimpi.group_synced_count, mimpi.received_message);
+        return MIMPI_ERROR_REMOTE_FINISHED;
+    }
+
+    // Case 2: The group is synced.
+    ASSERT_ZERO(pthread_mutex_lock(&mimpi.mutex));
+    mimpi.group_synced_count = 0;
+    mimpi.state = MIMPI_STATE_IDLE;
+    ASSERT_ZERO(pthread_mutex_unlock(&mimpi.mutex));
+
+    // [REDUCE] Copy the result to the recv_data (only for the root).
+    memcpy(recv_data, mimpi.received_message->data, count);
+
+    // Create a notify metadata to be propagated to children.
+    mimpi_metadata_t metadata = {
+            .count = 0,
+            .source = mimpi.rank,
+            .tag = MIMPI_REDUCE_NOTIFY_TAG
+    };
+
+    d3g prt("[REDUCE] Rank %d sending REDUCE_NOTIFY to children\n", mimpi.rank);
+    // Propagate the message to children (if any).
+    if (get_left_child(root) < mimpi.n) {
+        complete_chsend(get_pipe_write_fd(mimpi.rank, get_left_child(root), mimpi.n),
+                        &metadata, sizeof(mimpi_metadata_t));
+    }
+    if (get_right_child(root) < mimpi.n) {
+        complete_chsend(get_pipe_write_fd(mimpi.rank, get_right_child(root), mimpi.n),
+                        &metadata, sizeof(mimpi_metadata_t));
+    }
+    return MIMPI_SUCCESS;
+}
+
+MIMPI_Retcode handle_reduce_non_root(
+        void const *send_data,
+        void *recv_data,
+        int count,
+        MIMPI_Op op,
+        int root
+) {
+    assert(mimpi.rank != root);
+
+    mimpi_metadata_t metadata = {
+            .count = count,
+            .source = mimpi.rank,
+            .tag = get_reduce_wait_tag(op)
+    };
+    MIMPI_Retcode metadata_write_result =
+            complete_chsend(get_pipe_write_fd(mimpi.rank, root, mimpi.n),
+                            &metadata, sizeof(mimpi_metadata_t));
+    if (metadata_write_result != MIMPI_SUCCESS) return metadata_write_result;
+
+    MIMPI_Retcode data_write_result =
+            complete_chsend(get_pipe_write_fd(mimpi.rank, root, mimpi.n),
+                            send_data, count);
+    if (data_write_result != MIMPI_SUCCESS) return data_write_result;
+
+    d3g prt("Rank %d waiting for REDUCE_NOTIFY from %d\n", mimpi.rank, get_parent(root));
+
+    set_wait_state(get_parent(root), MIMPI_REDUCE_NOTIFY_TAG, 0); // wait just for metadata
+    ASSERT_ZERO(sem_wait(&mimpi.semaphore)); // Notice: the receiver thread posts the semaphore.
+    clear_wait_state();
+
+    // Case 1: An error occurred.
+    if (mimpi.received_message == NULL) {
+        d3g prt("Rank %d error after waiting for REDUCE_NOTIFY\n", mimpi.rank);
+        return MIMPI_ERROR_REMOTE_FINISHED;
+    }
+
+    // Case 2: The message arrived.
+    // - swap the sender in metadata
+    mimpi.received_message->metadata.source = mimpi.rank;
+
+    // - and propagate the message (just metadata) to children (if any).
+    if (get_left_child(root) < mimpi.n) {
+        complete_chsend(get_pipe_write_fd(mimpi.rank, get_left_child(root), mimpi.n),
+                        &mimpi.received_message->metadata, sizeof(mimpi_metadata_t));
+    }
+    if (get_right_child(root) < mimpi.n) {
+        complete_chsend(get_pipe_write_fd(mimpi.rank, get_right_child(root), mimpi.n),
+                        &mimpi.received_message->metadata, sizeof(mimpi_metadata_t));
+    }
+    return MIMPI_SUCCESS;
+}
+
 MIMPI_Retcode MIMPI_Reduce(
     void const *send_data,
     void *recv_data,
@@ -897,9 +1109,23 @@ MIMPI_Retcode MIMPI_Reduce(
     MIMPI_Op op,
     int root
 ) {
-    TODO
-}
+    if (root < 0 || root >= mimpi.n) return MIMPI_ERROR_NO_SUCH_RANK;
+    if (mimpi.open_channels < mimpi.n - 1) {
+        d3g prt("Rank %d: ERROR: open_channels = %d\n", mimpi.rank, mimpi.open_channels);
+        return MIMPI_ERROR_REMOTE_FINISHED;
+    }
+    if (mimpi.n == 1) {
+        memcpy(recv_data, send_data, count);
+        return MIMPI_SUCCESS;
+    }
 
+    if (mimpi.rank == root) {
+        return handle_reduce_root(send_data, recv_data, count, op, root);
+    }
+    else {
+        return handle_reduce_non_root(send_data, recv_data, count, op, root);
+    }
+}
 
 
 
