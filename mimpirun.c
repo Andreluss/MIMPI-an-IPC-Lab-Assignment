@@ -108,7 +108,7 @@ int main(int argc, char** argv) {
     save_n_to_env(n);
 
     create_channels(n);
-    dbg print_open_descriptors(n);
+//    dbg print_open_descriptors(n);
 
     for (int i = 0; i < n; i++) {
         pid_t pid; ASSERT_SYS_OK(pid = fork());
