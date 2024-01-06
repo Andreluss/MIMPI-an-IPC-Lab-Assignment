@@ -390,7 +390,8 @@ static void* receiver_thread(void* _source) {
         }
     }
 
-//    ASSERT_ZERO()
+    ASSERT_ZERO(sem_post(&mimpi.semaphore));
+    return NULL;
 }
 
 static void set_received_message(received_message_t *message) {
