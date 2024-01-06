@@ -273,6 +273,7 @@ static MIMPI_Retcode complete_chsend(int fd, const void *data, size_t bytes_to_w
 }
 
 static MIMPI_Retcode complete_chrecv(int fd, void* data, size_t bytes_to_read) {
+    assert(bytes_to_read > 0);
     while (bytes_to_read > 0) {
         int bytes_read = chrecv(fd, data, bytes_to_read);
         dbg {
@@ -357,7 +358,7 @@ static void* receiver_thread(void* _source) {
 
         // (1) Read metadata message from the sender.
         mimpi_metadata_t metadata;
-        MIMPI_Retcode metadata_read_result = complete_chrecv(read_fd, &metadata, sizeof(metadata));
+        MIMPI_Retcode metadata_read_result = complete_chrecv(read_fd, &metadata, sizeof(mimpi_metadata_t ));
         if (metadata_read_result != MIMPI_SUCCESS) {
             dbg {
                 prt("Pid %d: ERROR metadata_read_result = %d\n", getpid(), metadata_read_result);
@@ -489,7 +490,7 @@ static void* receiver_thread(void* _source) {
     }
     mimpi.open_channels -= 1;
     ASSERT_ZERO(pthread_mutex_unlock(&mimpi.mutex));
-    dbg prt("Helper thread for %d -> %d ended\n", source_rank, mimpi.rank);
+    d2g prt("Helper thread for %d -> %d ended\n", source_rank, mimpi.rank);
     return NULL;
 }
 
@@ -539,9 +540,9 @@ void MIMPI_Finalize() {
         ASSERT_ZERO(close(read_fd));
         ASSERT_ZERO(close(write_fd));
     }
-    dbg {
+    d2g {
         prt("Process with rank %d closed all channels\n", mimpi.rank);
-//        print_open_descriptors(mimpi.n);
+        print_open_descriptors(mimpi.n);
     };
 
     // (2) Now wait for the helper threads to finish
@@ -549,7 +550,7 @@ void MIMPI_Finalize() {
     for (int i = 0; i < mimpi.n; i++) {
         if (i == mimpi.rank)
             continue;
-        dbg {
+        d2g {
             prt("Rank %d waiting for helper thread for %d -> %d to finish...\n",
                 mimpi.rank, i, mimpi.rank);
         }
@@ -559,7 +560,7 @@ void MIMPI_Finalize() {
     // (3) Free all memory allocated in MIMPI_Init().
     mimpi_destroy();
     channels_finalize();
-    dbg prt("Process with rank %d successfully FINALIZED\n", mimpi.rank);
+    d2g prt("Process with rank %d successfully FINALIZED\n", mimpi.rank);
 }
 
 int MIMPI_World_size() {
@@ -687,6 +688,7 @@ MIMPI_Retcode MIMPI_Barrier() {
 
         // Case 1: An error occurred.
         if (mimpi.group_synced_count < mimpi.n) {
+            d2g prt("Rank %d: ERROR after waiting for BARRIER\n", mimpi.rank);
             return MIMPI_ERROR_REMOTE_FINISHED;
         }
 

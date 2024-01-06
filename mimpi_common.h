@@ -78,8 +78,8 @@ void get_pipe_fd_to_string(int fd, int n, char *buf, int buf_size);
 /* ------------------ Debug macros ----------------- */
 // Different levels of debug:
 #define dbg if (false)
-#define d2g if (false)
-#define d3g if (false)
+#define d2g if (true)
+#define d3g if (true)
 
 #include <stdio.h>
 #define prt(...) \
