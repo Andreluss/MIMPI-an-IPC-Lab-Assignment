@@ -389,8 +389,10 @@ static void* receiver_thread(void* _source) {
         if (mimpi.deadlock_detection && new_msg->metadata.source == DEADLOCK_MANAGER) {
             // We just got an info that the other process was waiting for us (count, tag).
             // Let's set the requested message first:
-            message_destroy_and_free(mimpi.requested_message[source_rank]);
-            mimpi.requested_message[source_rank] = new_msg; // (possibly overwrites the previous one)
+            assert(mimpi.requested_message[source_rank] == NULL);
+//            message_destroy_and_free(mimpi.requested_message[source_rank]);
+            mimpi.requested_message[source_rank] = new_msg;
+
             assert(new_msg->metadata.source == DEADLOCK_MANAGER);
             message_t* matching_sent_message = message_list_find_and_pop(&mimpi.sent_messages[source_rank],
                                                                          new_msg->metadata.count,
@@ -407,8 +409,8 @@ static void* receiver_thread(void* _source) {
             }
             else {
                 d4g prt("Rank %d: no matching_sent_message (receiver thread) so...\n", mimpi.rank);
-                if (mimpi.state == MIMPI_STATE_WAIT) {
-                    d4g prt("Rank %d: [DEADLOCK] (receiver) detected when waiting for (%d, %d, %d)\n", mimpi.rank,
+                if (mimpi.state == MIMPI_STATE_WAIT && mimpi.recv_source == source_rank) {
+                    d4g prt("Rank %d: DEADLOCK in THREAD when waiting for (%d, %d, %d)\n", mimpi.rank,
                            mimpi.recv_count, mimpi.recv_source, mimpi.recv_tag);
                     message_t* deadlock_message = malloc(sizeof(message_t));
                     message_init(deadlock_message, (mimpi_metadata_t) {
@@ -416,9 +418,11 @@ static void* receiver_thread(void* _source) {
                         .source = DEADLOCK_MANAGER,
                         .tag = MIMPI_DEADLOCK_DETECTED_TAG
                     }, NULL);
+
                     message_destroy_and_free(mimpi.requested_message[source_rank]);
                     mimpi.requested_message[source_rank] = NULL;
                     set_run_state_with_message(deadlock_message);
+
                     ASSERT_ZERO(sem_post(&mimpi.semaphore));
                 }
                 else {
@@ -603,7 +607,6 @@ MIMPI_Retcode MIMPI_Recv(
     }
 
 
-
     // (1) Check if the message is already in the list of received messages.
     ASSERT_ZERO(pthread_mutex_lock(&mimpi.mutex));
     if (mimpi.deadlock_detection) {
@@ -614,10 +617,12 @@ MIMPI_Retcode MIMPI_Recv(
                 .source = DEADLOCK_MANAGER,
                 .tag = tag
         }, sizeof(mimpi_metadata_t));
-        d4g prt("Rank %d: send request info (%d, %d) to %d [ret: %d]\n", mimpi.rank, count, tag, source, ret);
+        d4g prt("Rank %d: REQUEST NOTIFY (%d, %d) to %d [ret: %d]\n", mimpi.rank, count, tag, source, ret);
     }
+
     message_t* message = message_list_find_and_pop(&mimpi.ml, count, source, tag);
     if (message) {
+        if (mimpi.deadlock_detection) assert(false);
         // If the message is already in the list, then we can return it.
         memcpy(data, message->data, count);
         message_destroy_and_free(message);
@@ -630,18 +635,18 @@ MIMPI_Retcode MIMPI_Recv(
 
 
         if (mimpi.dead[source]) {
-            dbg prt("Rank %d: Message (%d, src: %d, %d) not received [REMOTE_FINISHED] because source is DEAD.\n", mimpi.rank, count, source, tag);
+            dbg prt("Rank %d: DEAD SOURCE Message (%d, src: %d, %d) not received [REMOTE_FINISHED].\n", mimpi.rank, count, source, tag);
             ASSERT_ZERO(pthread_mutex_unlock(&mimpi.mutex));
-            if (mimpi.deadlock_detection) {
-                bool other_also_waiting = (mimpi.requested_message[source] != NULL);
-                d4g prt("%d asdfasdffffffffffffffsdsas%s", other_also_waiting, "\n");
-                if (other_also_waiting) {
-                    d4g prt("fsdfadfas%s", "\n");
-                    message_destroy_and_free(mimpi.requested_message[source]);
-                    mimpi.requested_message[source] = NULL;
-                    return MIMPI_ERROR_DEADLOCK_DETECTED;
-                }
-            }
+//            if (mimpi.deadlock_detection) {
+//                bool other_also_waiting = (mimpi.requested_message[source] != NULL);
+//                d4g prt("%d asdfasdffffffffffffffsdsas%s", other_also_waiting, "\n");
+//                if (other_also_waiting) {
+//                    d4g prt("fsdfadfas%s", "\n");
+//                    message_destroy_and_free(mimpi.requested_message[source]);
+//                    mimpi.requested_message[source] = NULL;
+//                    return MIMPI_ERROR_DEADLOCK_DETECTED;
+//                }
+//            }
             return MIMPI_ERROR_REMOTE_FINISHED;
         }
 
@@ -649,10 +654,11 @@ MIMPI_Retcode MIMPI_Recv(
             bool other_also_waiting = (mimpi.requested_message[source] != NULL);
             if (other_also_waiting) {
                 // deadlock detected
-                d4g prt("Rank %d: Message (%d, src: %d, %d) not received [DEADLOCK_DETECTED] because source is also waiting.\n", mimpi.rank, count, source, tag);
+                d4g prt("Rank %d: DEADLOCK in RECV (before WAIT) Message (%d, src: %d, %d) not received - source is also waiting.\n", mimpi.rank, count, source, tag);
 
+                assert(mimpi.state == MIMPI_STATE_RUN);
                 message_destroy_and_free(mimpi.requested_message[source]);
-                mimpi.requested_message[source] = NULL; // TODO check
+                mimpi.requested_message[source] = NULL;
 
                 ASSERT_ZERO(pthread_mutex_unlock(&mimpi.mutex));
                 return MIMPI_ERROR_DEADLOCK_DETECTED;
@@ -664,6 +670,7 @@ MIMPI_Retcode MIMPI_Recv(
 
         set_wait_state(source, tag, count);
         ASSERT_ZERO(pthread_mutex_unlock(&mimpi.mutex));
+        d4g prt("Rank %d: Wait...\n", mimpi.rank);
 
         // this part is blocking until the message arrives (or an error occurs):
         // -----------------------------------------------------------------
@@ -674,19 +681,27 @@ MIMPI_Retcode MIMPI_Recv(
         assert(mimpi.state == MIMPI_STATE_RUN);
         // Move the received message to local variable.
         message = mimpi.received_message; mimpi.received_message = NULL;
-        ASSERT_ZERO(pthread_mutex_unlock(&mimpi.mutex));
+
 
         // Case 1: An error occurred.
         if (message == NULL) {
             d3g prt("Rank %d: Message (%d, src: %d, %d) was not received [REMOTE_FINISHED].\n", mimpi.rank, count, source, tag);
+            ASSERT_ZERO(pthread_mutex_unlock(&mimpi.mutex));
             return MIMPI_ERROR_REMOTE_FINISHED;
         }
         else if (message->metadata.tag == MIMPI_DEADLOCK_DETECTED_TAG) {
             d3g prt("Rank %d: Message (%d, src: %d, %d) was not received [DEADLOCK_DETECTED].\n", mimpi.rank, count, source, tag);
             // clear requested flag at other TODO ?????????????? or maybe just overwrite it
             // or maybe set it to null ??
+            d4g prt("Rank %d: DEADLOCK in RECV (after WAIT) Message (%d, src: %d, %d) not received - source is also waiting.\n", mimpi.rank, count, source, tag);
+
+            assert(mimpi.state == MIMPI_STATE_RUN);
+//            assert(mimpi.requested_message[source] != NULL); // ? TODO rem
+            ASSERT_ZERO(pthread_mutex_unlock(&mimpi.mutex));
+
             return MIMPI_ERROR_DEADLOCK_DETECTED;
         }
+        ASSERT_ZERO(pthread_mutex_unlock(&mimpi.mutex));
 
         // Case 2: The message arrived.
         d3g prt("Rank %d: Message (%d, src: %d, %d) was received.\n", mimpi.rank, count, source, tag);
