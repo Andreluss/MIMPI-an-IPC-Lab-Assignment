@@ -35,6 +35,8 @@ static int msleep(long msec)
 
 int main(int argc, char **argv)
 {
+    setbuf(stdout, NULL); // unbuffered stdout
+
     MIMPI_Init(false);
 
     int const process_rank = MIMPI_World_rank();
