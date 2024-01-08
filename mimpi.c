@@ -396,7 +396,7 @@ static void* receiver_thread(void* _source) {
             assert(new_msg->metadata.source == DEADLOCK_MANAGER);
             message_t* matching_sent_message = message_list_find_and_pop(&mimpi.sent_messages[source_rank],
                                                                          new_msg->metadata.count,
-                                                                         new_msg->metadata.source,
+                                                                         new_msg->metadata.source, // !!!!!
                                                                          new_msg->metadata.tag);
             if (matching_sent_message != NULL) {
                 d4g prt("Rank %d: matching_sent_message (%d, %d, %d)\n", mimpi.rank,
@@ -408,7 +408,7 @@ static void* receiver_thread(void* _source) {
                 mimpi.requested_message[source_rank] = NULL;
             }
             else {
-                d4g prt("Rank %d: no matching_sent_message (receiver thread) so...\n", mimpi.rank);
+//                d4g prt("Rank %d: no matching_sent_message (receiver thread) so...\n", mimpi.rank);
                 if (mimpi.state == MIMPI_STATE_WAIT && mimpi.recv_source == source_rank) {
                     d4g prt("Rank %d: DEADLOCK in THREAD when waiting for (%d, %d, %d)\n", mimpi.rank,
                            mimpi.recv_count, mimpi.recv_source, mimpi.recv_tag);
@@ -426,7 +426,7 @@ static void* receiver_thread(void* _source) {
                     ASSERT_ZERO(sem_post(&mimpi.semaphore));
                 }
                 else {
-                    d4g prt("Rank %d: RECEIVED deadlock message, but we're not waiting yet!\n", mimpi.rank);
+                    d4g prt("Rank %d: RECEIVED deadlock message, but we're not waiting for %d yet!\n", mimpi.rank, source_rank);
                 }
             }
         }
@@ -546,6 +546,8 @@ MIMPI_Retcode MIMPI_Send(
         return MIMPI_ERROR_NO_SUCH_RANK;
     }
 
+    d4g prt("Rank %d: SEND (%d, %d) to %d\n", mimpi.rank, count, tag, destination);
+
     // Get write fd for the pipe mimpi.rank -> destination.
     int write_fd = get_pipe_write_fd(mimpi.rank, destination, mimpi.n);
 
@@ -578,14 +580,14 @@ MIMPI_Retcode MIMPI_Send(
         // then we can clear the requested message
         d4g prt("Rank %d: Sent message (%d, src: %d, %d)\n", mimpi.rank, count, mimpi.rank, tag);
         if (mimpi.requested_message[destination] != NULL &&
-            metadata_matches_params(&mimpi.requested_message[destination]->metadata, mimpi.rank, tag, count))
+            metadata_matches_params(&mimpi.requested_message[destination]->metadata, DEADLOCK_MANAGER, tag, count))
         {
-            d4g prt("Rank %d: Sent message (%d, src: %d, %d) clears requested message\n", mimpi.rank, count, mimpi.rank, tag);
+//            d4g prt("Rank %d: Sent message (%d, src: %d, %d) clears requested message\n", mimpi.rank, count, mimpi.rank, tag);
             message_destroy_and_free(mimpi.requested_message[destination]);
             mimpi.requested_message[destination] = NULL;
         }
         else {
-            d4g prt("Rank %d: Sent message (%d, src: %d, %d) doesn't clear requested message\n", mimpi.rank, count, mimpi.rank, tag);
+//            d4g prt("Rank %d: Sent message (%d, src: %d, %d) doesn't clear requested message\n", mimpi.rank, count, mimpi.rank, tag);
             message_list_push(&mimpi.sent_messages[destination], message);
         }
         ASSERT_ZERO(pthread_mutex_unlock(&mimpi.mutex));
@@ -606,6 +608,7 @@ MIMPI_Retcode MIMPI_Recv(
         return MIMPI_ERROR_NO_SUCH_RANK;
     }
 
+    d4g prt("Rank %d: RECV (%d, %d) from %d\n", mimpi.rank, count, tag, source);
 
     // (1) Check if the message is already in the list of received messages.
     ASSERT_ZERO(pthread_mutex_lock(&mimpi.mutex));
@@ -622,7 +625,7 @@ MIMPI_Retcode MIMPI_Recv(
 
     message_t* message = message_list_find_and_pop(&mimpi.ml, count, source, tag);
     if (message) {
-        if (mimpi.deadlock_detection) assert(false);
+//        if (mimpi.deadlock_detection) assert(false);
         // If the message is already in the list, then we can return it.
         memcpy(data, message->data, count);
         message_destroy_and_free(message);
@@ -664,13 +667,13 @@ MIMPI_Retcode MIMPI_Recv(
                 return MIMPI_ERROR_DEADLOCK_DETECTED;
             }
             else {
-                d4g prt("Rank %d: Other rank is not yet waiting... I'll ---WAIT---\n", mimpi.rank);
+                d4g prt("Rank %d: Other rank is not yet waiting... I'm waiting...\n", mimpi.rank);
             }
         }
 
         set_wait_state(source, tag, count);
         ASSERT_ZERO(pthread_mutex_unlock(&mimpi.mutex));
-        d4g prt("Rank %d: Wait...\n", mimpi.rank);
+//        d4g prt("Rank %d: Wait...\n", mimpi.rank);
 
         // this part is blocking until the message arrives (or an error occurs):
         // -----------------------------------------------------------------
