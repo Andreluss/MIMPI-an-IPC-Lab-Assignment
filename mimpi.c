@@ -610,7 +610,6 @@ MIMPI_Retcode MIMPI_Recv(
 
     d4g prt("Rank %d: RECV (%d, %d) from %d\n", mimpi.rank, count, tag, source);
 
-    // (1) Check if the message is already in the list of received messages.
     ASSERT_ZERO(pthread_mutex_lock(&mimpi.mutex));
     if (mimpi.deadlock_detection) {
         // send message to source that we are waiting for it (even if it's been already received or the source is dead).
@@ -623,6 +622,7 @@ MIMPI_Retcode MIMPI_Recv(
         d4g prt("Rank %d: REQUEST NOTIFY (%d, %d) to %d [ret: %d]\n", mimpi.rank, count, tag, source, ret);
     }
 
+    // (1) Check if the message is already in the list of received messages.
     message_t* message = message_list_find_and_pop(&mimpi.ml, count, source, tag);
     if (message) {
 //        if (mimpi.deadlock_detection) assert(false);

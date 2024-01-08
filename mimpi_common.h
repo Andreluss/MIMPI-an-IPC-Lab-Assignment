@@ -81,7 +81,7 @@ void get_pipe_fd_to_string(int fd, int n, char *buf, int buf_size);
 #define ddd 0
 #define d2g if (ddd)
 #define d3g if (ddd)
-#define d4g if (1)
+#define d4g if (false)
 
 #include <stdio.h>
 #define prt(fmt, ...) \
