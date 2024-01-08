@@ -22,12 +22,7 @@ static const int MIMPI_REDUCE_WAIT_PROD_TAG = -10;
 static const int MIMPI_REDUCE_WAIT_SUM_TAG = -11;
 static const int MIMPI_REDUCE_WAIT_MIN_TAG = -12;
 static const int MIMPI_REDUCE_WAIT_MAX_TAG = -13;
-static bool is_reduce_wait_tag(int tag) {
-    return tag == MIMPI_REDUCE_WAIT_PROD_TAG ||
-           tag == MIMPI_REDUCE_WAIT_SUM_TAG ||
-           tag == MIMPI_REDUCE_WAIT_MIN_TAG ||
-           tag == MIMPI_REDUCE_WAIT_MAX_TAG;
-}
+
 int get_reduce_wait_tag(MIMPI_Op op) {
     switch (op) {
         case MIMPI_PROD: return MIMPI_REDUCE_WAIT_PROD_TAG;
@@ -37,15 +32,7 @@ int get_reduce_wait_tag(MIMPI_Op op) {
         default: assert(false);
     }
 }
-MIMPI_Op get_reduce_operation_type(int tag) {
-    // the following doesn't work, please use if statements:
-    if (tag == MIMPI_REDUCE_WAIT_PROD_TAG) return MIMPI_PROD;
-    if (tag == MIMPI_REDUCE_WAIT_SUM_TAG) return MIMPI_SUM;
-    if (tag == MIMPI_REDUCE_WAIT_MIN_TAG) return MIMPI_MIN;
-    if (tag == MIMPI_REDUCE_WAIT_MAX_TAG) return MIMPI_MAX;
-    assert(false);
-//    return (MIMPI_Op) (MIMPI_REDUCE_WAIT_PROD_TAG - tag);
-}
+
 uint8_t perform_operation(MIMPI_Op op, uint8_t a, uint8_t b) {
     switch (op) {
         case MIMPI_PROD: return a * b;
@@ -57,15 +44,6 @@ uint8_t perform_operation(MIMPI_Op op, uint8_t a, uint8_t b) {
 }
 
 typedef struct {
-//    enum {
-//        MIMPI_SEND,
-//        MIMPI_BARRIER_WAIT,
-//        MIMPI_BARRIER_NOTIFY,
-//        MIMPI_BCAST_WAIT,
-//        MIMPI_BCAST_NOTIFY,
-//        MIMPI_REDUCE_WAIT,
-//        MIMPI_REDUCE_NOTIFY,
-//    } type;
     int count;
     int source;
     int tag;
@@ -101,7 +79,6 @@ static void* receiver_thread(void* _source);
 enum mimpi_state_t {
     MIMPI_STATE_RUN,
     MIMPI_STATE_WAIT,
-    MIMPI_STATE_GROUP_SYNCING
 };
 typedef enum mimpi_state_t mimpi_state_t;
 
@@ -303,20 +280,15 @@ static MIMPI_Retcode complete_chrecv(int fd, void* data, size_t bytes_to_read) {
     return MIMPI_SUCCESS;
 }
 
-static void merge_messages_inplace(received_message_t* main_message,
-                                   received_message_t* other_message) {
-    assert(main_message != NULL);
-    assert(other_message != NULL);
-    assert(main_message->metadata.count == other_message->metadata.count);
-    assert(main_message->metadata.tag == other_message->metadata.tag);
-    assert(is_reduce_wait_tag(main_message->metadata.tag));
-
-    int count = main_message->metadata.count;
-    uint8_t* main_data = main_message->data;
-    uint8_t* other_data = other_message->data;
-    MIMPI_Op op = get_reduce_operation_type(main_message->metadata.tag);
+static void merge_data_inplace(void* main_data,
+                               void* other_data,
+                               int count, MIMPI_Op op) {
+    assert(main_data != NULL);
+    assert(other_data != NULL);
     for (int i = 0; i < count; i++) {
-        main_data[i] = perform_operation(op, main_data[i], other_data[i]);
+        uint8_t main_value = ((uint8_t*) main_data)[i];
+        uint8_t other_value = ((uint8_t*) other_data)[i];
+        ((uint8_t*) main_data)[i] = perform_operation(op, main_value, other_value);
     }
 }
 
@@ -636,6 +608,22 @@ int get_parent(int msg_root) {
     return nodes[(idx - 1) / 2];
 }
 
+bool is_ancestor(int msg_root, int other_rank) {
+    int nodes[16] = {0}; // MAX_N = 16
+    for (int i = 0; i < mimpi.n; i++) nodes[i] = i;
+    nodes[0] = msg_root;
+    nodes[msg_root] = 0;
+
+    int idx_other = 0; while (nodes[idx_other] != other_rank) idx_other++;
+
+    // go through all the ancestors of other_rank and check if any of them is mimpi.rank
+    while(idx_other != 0 && nodes[idx_other] != mimpi.rank) {
+        idx_other = (idx_other - 1) / 2;
+    }
+
+    return nodes[idx_other] == mimpi.rank;
+}
+
 bool exists(int rank) {
     return rank >= 0 && rank < mimpi.n;
 }
@@ -681,294 +669,109 @@ MIMPI_Retcode MIMPI_Bcast(
 ) {
     if (root < 0 || root >= mimpi.n) return MIMPI_ERROR_NO_SUCH_RANK;
     if (mimpi.n == 1) return MIMPI_SUCCESS;
-//    if (mimpi.open_channels < mimpi.n - 1) return MIMPI_ERROR_REMOTE_FINISHED;
 
-    // We always sync to rank 0.
-    if (mimpi.rank == 0) {
-        ASSERT_ZERO(pthread_mutex_lock(&mimpi.mutex));
-        mimpi.group_synced_count++;
-        mimpi.state = MIMPI_STATE_GROUP_SYNCING;
-        bool should_wait = (mimpi.group_synced_count < mimpi.n);
-        mimpi.is_waiting_on_semaphore = should_wait;
-        ASSERT_ZERO(pthread_mutex_unlock(&mimpi.mutex));
-
-        // If this is the root, we should copy the data to the received_message.
-        if (mimpi.rank == root) {
-            d2g prt("Rank %d setting received message to %p\n", mimpi.rank, data);
-            received_message_t* message = malloc(sizeof(received_message_t));
-            received_message_init(message, (mimpi_metadata_t) {
-                    .count = count,
-                    .source = mimpi.rank,
-                    .tag = MIMPI_BCAST_NOTIFY_TAG
-            }, malloc(count));
-            memcpy(message->data, data, count);
-            set_received_message(message); // [BROADCAST] Data is copied to received_message.
-        }
-
-        if (should_wait) { // Notice: the receiver thread SHOULD post the semaphore.
-            ASSERT_ZERO(sem_wait(&mimpi.semaphore));
-            mimpi.is_waiting_on_semaphore = false;
-        }
-
-        // Case 1: An error occurred.
-        if (mimpi.group_synced_count < mimpi.n || mimpi.received_message == NULL) {
-            d2g prt("Rank %d error after waiting for sync, group_synced_count = %d, received_message = %p\n",
-                   mimpi.rank, mimpi.group_synced_count, mimpi.received_message);
-            return MIMPI_ERROR_REMOTE_FINISHED;
-        } assert(mimpi.received_message->metadata.tag == MIMPI_BCAST_NOTIFY_TAG);
-
-        // Case 2: The group is synced.
-        ASSERT_ZERO(pthread_mutex_lock(&mimpi.mutex));
-        mimpi.group_synced_count = 0;
-        mimpi.state = MIMPI_STATE_RUN;
-        ASSERT_ZERO(pthread_mutex_unlock(&mimpi.mutex));
-
-        // [BROADCAST] If this wasn't the root, copy the received data to memory.
-        if (mimpi.rank != root) {
-            d2g prt("Rank %d copying data from %d", mimpi.rank, mimpi.received_message->metadata.source);
-            memcpy(data, mimpi.received_message->data, count);
-        }
-
-        d2g prt("Rank %d sending BCAST_NOTIFY to children\n", mimpi.rank);
-        // Send the broadcast message to children (if any).
-        if (get_left_child(0) < mimpi.n) {
-            assert(mimpi.received_message->metadata.count != 0);
-            // Send both metadata and data to child.
-            complete_chsend(get_pipe_write_fd(mimpi.rank, get_left_child(0), mimpi.n),
-                            &mimpi.received_message->metadata, sizeof(mimpi_metadata_t));
-            complete_chsend(get_pipe_write_fd(mimpi.rank, get_left_child(0), mimpi.n),
-                            mimpi.received_message->data, count);
-        }
-        if (get_right_child(0) < mimpi.n) {
-            complete_chsend(get_pipe_write_fd(mimpi.rank, get_right_child(0), mimpi.n),
-                            &mimpi.received_message->metadata, sizeof(mimpi_metadata_t));
-            complete_chsend(get_pipe_write_fd(mimpi.rank, get_right_child(0), mimpi.n),
-                            mimpi.received_message->data, count);
-        }
+    // Wait for BCAST_WAIT message from children (if any).
+    if (exists(get_left_child(root))) {
+        MIMPI_Retcode ret = MIMPI_Recv(NULL, 0, get_left_child(root), MIMPI_BCAST_WAIT_TAG);
+        if (ret != MIMPI_SUCCESS) return ret;
     }
-    else {
-        // (1) Send metadata message (BROADCAST_WAIT) to the synchronization root.
-        set_wait_state(get_parent(0), MIMPI_BCAST_NOTIFY_TAG, count);
-
-        mimpi_metadata_t* metadata = &(mimpi_metadata_t) {
-                .count = (mimpi.rank == root) ? count : 0,
-                .source = mimpi.rank,
-                .tag = MIMPI_BCAST_WAIT_TAG
-        };
-        MIMPI_Retcode metadata_write_result =
-            complete_chsend(get_pipe_write_fd(mimpi.rank, 0, mimpi.n),
-                            metadata, sizeof(mimpi_metadata_t));
-        if (metadata_write_result != MIMPI_SUCCESS) {
-            clear_wait_state();
-            return metadata_write_result;
-        }
-
-        if (metadata->count > 0) {
-            assert(mimpi.rank == root);
-            // [BROADCAST] If this is the root, send the data as well.
-            MIMPI_Retcode data_write_result =
-                complete_chsend(get_pipe_write_fd(mimpi.rank, 0, mimpi.n), data, count);
-            if (data_write_result != MIMPI_SUCCESS) {
-                clear_wait_state();
-                return data_write_result;
-            }
-        }
-        else {
-            assert(mimpi.rank != root);
-        }
-
-        d2g prt("Rank %d waiting for sync & broadcast from %d\n", mimpi.rank, root); // (2) Wait for the response (BROADCAST_NOTIFY) - from parent.
-        ASSERT_ZERO(sem_wait(&mimpi.semaphore)); // Notice: the receiver thread SHOULD post the semaphore.
-        clear_wait_state();
-
-        // Case 1: An error occurred.
-        if (mimpi.received_message == NULL) { // Notice: Receiver thread should set the received_message!
-            d2g prt("Rank %d error after waiting for sync & broadcast\n", mimpi.rank);
-            return MIMPI_ERROR_REMOTE_FINISHED;
-        }
-
-        // Case 2: The message arrived. Then:
-
-        // [BROADCAST] If this wasn't the root, we should actually copy the received data to memory.
-        if (mimpi.rank != root) {
-            d2g prt("Rank %d copying data from %d", mimpi.rank, mimpi.received_message->metadata.source);
-            memcpy(data, mimpi.received_message->data, count);
-        }
-
-
-        // - swap the sender in metadata
-        mimpi.received_message->metadata.source = mimpi.rank;
-
-        // - and propagate the message to children (if any).
-        if (get_left_child(0) < mimpi.n) {
-            assert(mimpi.received_message->metadata.count != 0);
-            // Send both metadata and data to child.
-            complete_chsend(get_pipe_write_fd(mimpi.rank, get_left_child(0), mimpi.n),
-                            &mimpi.received_message->metadata, sizeof(mimpi_metadata_t));
-            complete_chsend(get_pipe_write_fd(mimpi.rank, get_left_child(0), mimpi.n),
-                            mimpi.received_message->data, count);
-        }
-        if (get_right_child(0) < mimpi.n) {
-            complete_chsend(get_pipe_write_fd(mimpi.rank, get_right_child(0), mimpi.n),
-                            &mimpi.received_message->metadata, sizeof(mimpi_metadata_t));
-            complete_chsend(get_pipe_write_fd(mimpi.rank, get_right_child(0), mimpi.n),
-                            mimpi.received_message->data, count);
-        }
-    }
-    return MIMPI_SUCCESS;
-}
-
-MIMPI_Retcode handle_reduce_root(
-        void const *send_data,
-        void *recv_data,
-        int count,
-        MIMPI_Op op,
-        int root
-) {
-    assert(mimpi.rank == root);
-    // Create a dummy message.
-    received_message_t* message = malloc(sizeof(received_message_t));
-    received_message_init(message, (mimpi_metadata_t) {
-            .count = count,
-            .source = mimpi.rank,
-            .tag = get_reduce_wait_tag(op)
-    }, malloc(count));
-    memcpy(message->data, send_data, count);
-
-    ASSERT_ZERO(pthread_mutex_lock(&mimpi.mutex));
-    mimpi.group_synced_count++;
-    mimpi.state = MIMPI_STATE_GROUP_SYNCING;
-    bool should_wait = (mimpi.group_synced_count < mimpi.n);
-    mimpi.is_waiting_on_semaphore = should_wait;
-
-    // If this was the 1st message, initialize the reduction.
-    if (mimpi.group_synced_count == 1) {
-        set_received_message(message); // Notice: we only care about the data part of the message
-    }
-    else { // Else, merge the result with the current result.
-        merge_messages_inplace(mimpi.received_message, message);
-        received_message_destroy(message);
+    if (exists(get_right_child(root))) {
+        MIMPI_Retcode ret = MIMPI_Recv(NULL, 0, get_right_child(root), MIMPI_BCAST_WAIT_TAG);
+        if (ret != MIMPI_SUCCESS) return ret;
     }
 
-    ASSERT_ZERO(pthread_mutex_unlock(&mimpi.mutex));
-
-    if (should_wait) {
-        ASSERT_ZERO(sem_wait(&mimpi.semaphore));
-        mimpi.is_waiting_on_semaphore = false;
+    // Send BCAST_WAIT and wait for BCAST_NOTIFY + the message with count bytes from parent (if there is one).
+    if (exists(get_parent(root))) {
+        MIMPI_Retcode ret = MIMPI_Send(NULL, 0, get_parent(root), MIMPI_BCAST_WAIT_TAG);
+        if (ret != MIMPI_SUCCESS) return ret;
+        MIMPI_Retcode ret2 = MIMPI_Recv(data, count, get_parent(root), MIMPI_BCAST_NOTIFY_TAG);
+        if (ret2 != MIMPI_SUCCESS) return ret2;
     }
 
-    // Case 1: An error occurred.
-    if (mimpi.group_synced_count < mimpi.n || mimpi.received_message == NULL) {
-        d3g prt("[REDUCE] Rank %d error after waiting for sync, "
-                "group_synced_count = %d, received_message = %p\n",
-               mimpi.rank, mimpi.group_synced_count, mimpi.received_message);
-        return MIMPI_ERROR_REMOTE_FINISHED;
+    // Send BCAST_NOTIFY to children (if any).
+    if (exists(get_left_child(root))) {
+        MIMPI_Retcode ret = MIMPI_Send(data, count, get_left_child(root), MIMPI_BCAST_NOTIFY_TAG);
+        if (ret != MIMPI_SUCCESS) return ret;
+    }
+    if (exists(get_right_child(root))) {
+        MIMPI_Retcode ret = MIMPI_Send(data, count, get_right_child(root), MIMPI_BCAST_NOTIFY_TAG);
+        if (ret != MIMPI_SUCCESS) return ret;
     }
 
-    // Case 2: The group is synced.
-    ASSERT_ZERO(pthread_mutex_lock(&mimpi.mutex));
-    mimpi.group_synced_count = 0;
-    mimpi.state = MIMPI_STATE_RUN;
-    ASSERT_ZERO(pthread_mutex_unlock(&mimpi.mutex));
-
-    // [REDUCE] Copy the result to the recv_data (only for the root).
-    memcpy(recv_data, mimpi.received_message->data, count);
-
-    // Create a notify metadata to be propagated to children.
-    mimpi_metadata_t metadata = {
-            .count = 0,
-            .source = mimpi.rank,
-            .tag = MIMPI_REDUCE_NOTIFY_TAG
-    };
-
-    d3g prt("[REDUCE] Rank %d sending REDUCE_NOTIFY to children\n", mimpi.rank);
-    // Propagate the message to children (if any).
-    if (get_left_child(root) < mimpi.n) {
-        complete_chsend(get_pipe_write_fd(mimpi.rank, get_left_child(root), mimpi.n),
-                        &metadata, sizeof(mimpi_metadata_t));
-    }
-    if (get_right_child(root) < mimpi.n) {
-        complete_chsend(get_pipe_write_fd(mimpi.rank, get_right_child(root), mimpi.n),
-                        &metadata, sizeof(mimpi_metadata_t));
-    }
-    return MIMPI_SUCCESS;
-}
-
-MIMPI_Retcode handle_reduce_non_root(
-        void const *send_data,
-        void *recv_data,
-        int count,
-        MIMPI_Op op,
-        int root
-) {
-    assert(mimpi.rank != root);
-
-    mimpi_metadata_t metadata = {
-            .count = count,
-            .source = mimpi.rank,
-            .tag = get_reduce_wait_tag(op)
-    };
-    MIMPI_Retcode metadata_write_result =
-            complete_chsend(get_pipe_write_fd(mimpi.rank, root, mimpi.n),
-                            &metadata, sizeof(mimpi_metadata_t));
-    if (metadata_write_result != MIMPI_SUCCESS) return metadata_write_result;
-
-    MIMPI_Retcode data_write_result =
-            complete_chsend(get_pipe_write_fd(mimpi.rank, root, mimpi.n),
-                            send_data, count);
-    if (data_write_result != MIMPI_SUCCESS) return data_write_result;
-
-    d3g prt("Rank %d waiting for REDUCE_NOTIFY from %d\n", mimpi.rank, get_parent(root));
-
-    set_wait_state(get_parent(root), MIMPI_REDUCE_NOTIFY_TAG, 0); // wait just for metadata
-    ASSERT_ZERO(sem_wait(&mimpi.semaphore)); // Notice: the receiver thread posts the semaphore.
-    clear_wait_state();
-
-    // Case 1: An error occurred.
-    if (mimpi.received_message == NULL) {
-        d3g prt("Rank %d error after waiting for REDUCE_NOTIFY\n", mimpi.rank);
-        return MIMPI_ERROR_REMOTE_FINISHED;
-    }
-
-    // Case 2: The message arrived.
-    // - swap the sender in metadata
-    mimpi.received_message->metadata.source = mimpi.rank;
-
-    // - and propagate the message (just metadata) to children (if any).
-    if (get_left_child(root) < mimpi.n) {
-        complete_chsend(get_pipe_write_fd(mimpi.rank, get_left_child(root), mimpi.n),
-                        &mimpi.received_message->metadata, sizeof(mimpi_metadata_t));
-    }
-    if (get_right_child(root) < mimpi.n) {
-        complete_chsend(get_pipe_write_fd(mimpi.rank, get_right_child(root), mimpi.n),
-                        &mimpi.received_message->metadata, sizeof(mimpi_metadata_t));
-    }
     return MIMPI_SUCCESS;
 }
 
 MIMPI_Retcode MIMPI_Reduce(
     void const *send_data,
-    void *recv_data,
+    void *reccv_data,
     int count,
     MIMPI_Op op,
     int root
 ) {
     if (root < 0 || root >= mimpi.n) return MIMPI_ERROR_NO_SUCH_RANK;
-    if (mimpi.open_channels < mimpi.n - 1) {
-        d3g prt("Rank %d: ERROR: open_channels = %d\n", mimpi.rank, mimpi.open_channels);
-        return MIMPI_ERROR_REMOTE_FINISHED;
-    }
     if (mimpi.n == 1) {
-        memcpy(recv_data, send_data, count);
+        memcpy(reccv_data, send_data, count);
         return MIMPI_SUCCESS;
     }
 
-    if (mimpi.rank == root) {
-        return handle_reduce_root(send_data, recv_data, count, op, root);
+    int reduce_wait_tag = get_reduce_wait_tag(op);
+    void* merged_data = malloc(count); // for merging data from this node and children
+    memcpy(merged_data, send_data, count);
+    void* tmp_data = malloc(count); // for reading data from children
+
+    // Wait for REDUCE_WAIT message + data of size count from children (if any).
+    if (exists(get_left_child(root))) {
+        MIMPI_Retcode ret = MIMPI_Recv(tmp_data, count, get_left_child(root), reduce_wait_tag);
+        if (ret != MIMPI_SUCCESS) {
+            free(merged_data);
+            free(tmp_data);
+            return ret;
+        }
+        merge_data_inplace(merged_data, tmp_data, count, op);
+    }
+    if (exists(get_right_child(root))) {
+        MIMPI_Retcode ret = MIMPI_Recv(tmp_data, count, get_right_child(root), reduce_wait_tag);
+        if (ret != MIMPI_SUCCESS) {
+            free(merged_data);
+            free(tmp_data);
+            return ret;
+        }
+        merge_data_inplace(merged_data, tmp_data, count, op);
+    }
+    free(tmp_data);
+    d3g prt("Rank %d: after merge_data_inplace\n", mimpi.rank);
+
+    // Send REDUCE_WAIT + merged data and wait for REDUCE_NOTIFY from parent (if there is one).
+    if (exists(get_parent(root))) {
+        MIMPI_Retcode ret = MIMPI_Send(merged_data, count, get_parent(root), reduce_wait_tag);
+        if (ret != MIMPI_SUCCESS) {
+            free(merged_data);
+            return ret;
+        }
+
+        MIMPI_Retcode ret2 = MIMPI_Recv(NULL, 0, get_parent(root), MIMPI_REDUCE_NOTIFY_TAG);
+        if (ret2 != MIMPI_SUCCESS) {
+            free(merged_data);
+            return ret2;
+        }
     }
     else {
-        return handle_reduce_non_root(send_data, recv_data, count, op, root);
+        d3g prt("Rank %d: root received reduce data\n", mimpi.rank);
+        memcpy(reccv_data, merged_data, count); // Copy result to reccv_data only in the root!
     }
+    free(merged_data);
+
+    // Send REDUCE_NOTIFY to children (if any).
+    if (exists(get_left_child(root))) {
+        MIMPI_Retcode ret = MIMPI_Send(NULL, 0, get_left_child(root), MIMPI_REDUCE_NOTIFY_TAG);
+        if (ret != MIMPI_SUCCESS) return ret;
+    }
+    if (exists(get_right_child(root))) {
+        MIMPI_Retcode ret = MIMPI_Send(NULL, 0, get_right_child(root), MIMPI_REDUCE_NOTIFY_TAG);
+        if (ret != MIMPI_SUCCESS) return ret;
+    }
+
+    return MIMPI_SUCCESS;
 }
 
 

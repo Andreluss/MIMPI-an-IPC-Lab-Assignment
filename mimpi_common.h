@@ -78,7 +78,7 @@ void get_pipe_fd_to_string(int fd, int n, char *buf, int buf_size);
 /* ------------------ Debug macros ----------------- */
 // Different levels of debug:
 #define dbg if (false)
-#define ddd 1
+#define ddd 0
 #define d2g if (ddd)
 #define d3g if (ddd)
 
