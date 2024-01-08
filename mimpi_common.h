@@ -81,13 +81,14 @@ void get_pipe_fd_to_string(int fd, int n, char *buf, int buf_size);
 #define ddd 0
 #define d2g if (ddd)
 #define d3g if (ddd)
+#define d4g if (1)
 
 #include <stdio.h>
 #define prt(fmt, ...) \
     do { \
         char const *colors[] = {"\033[31m",  "\033[32m", "\033[33m", "\033[34m", "\033[35m", "\033[36m"}; \
         int const colors_len = sizeof(colors) / sizeof(colors[0]);        \
-        int const color = rand() % colors_len; \
+        int const color = (__LINE__) % colors_len; \
         fprintf(stderr, "[%s][%d]: %s" fmt "\033[0m", __FILE__, __LINE__, colors[color], __VA_ARGS__);    \
         fflush(stderr);              \
     } while (0)

@@ -50,10 +50,10 @@ Należy zaimplementować następujące procedury o sygnaturach z pliku nagłówk
 
 ### Procedury pomocnicze
 
-- `void MIMPI_Init(bool enable_deadlock_detection)`
+- `void MIMPI_Init(bool deadlock_detection)`
 
   Otwiera _blok MPI_, inicjalizując potrzebne dla działania biblioteki `mimpi` zasoby.
-  Flaga `enable_deadlock_detection` włącza wykrywanie zakleszczeń do końca _bloku MPI_ (opis poniżej w **Usprawnienie4**).
+  Flaga `deadlock_detection` włącza wykrywanie zakleszczeń do końca _bloku MPI_ (opis poniżej w **Usprawnienie4**).
 
 - `void MIMPI_Finalize()`
 
