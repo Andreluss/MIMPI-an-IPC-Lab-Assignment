@@ -470,7 +470,7 @@ MIMPI_Retcode MIMPI_Send(
     // Get write fd for the pipe mimpi.rank -> destination.
     int write_fd = get_pipe_write_fd(mimpi.rank, destination, mimpi.n);
 
-    // (1) Send a metadata message to the destination.
+   /* // (1) Send a metadata message to the destination.
     // The message will contain the size of the data to be sent and the tag.
     mimpi_metadata_t metadata = {
         .count = count,
@@ -486,6 +486,22 @@ MIMPI_Retcode MIMPI_Send(
     int data_write_result = complete_chsend(write_fd, data, count);
     if (data_write_result != MIMPI_SUCCESS) {
         return data_write_result;
+    }*/
+
+    // Send metadata + data in a 'single stream' of bytes.
+    void* metadata_and_data = malloc(sizeof(mimpi_metadata_t) + count);
+    memcpy(metadata_and_data, &(mimpi_metadata_t) {
+        .count = count,
+        .source = mimpi.rank,
+        .tag = tag
+    }, sizeof(mimpi_metadata_t));
+    memcpy(metadata_and_data + sizeof(mimpi_metadata_t), data, count);
+
+    MIMPI_Retcode metadata_and_data_write_result = complete_chsend(write_fd, metadata_and_data, sizeof(mimpi_metadata_t) + count);
+    free(metadata_and_data);
+
+    if (metadata_and_data_write_result != MIMPI_SUCCESS) {
+        return metadata_and_data_write_result;
     }
 
     // in *mutex* update sent messages list TODO
