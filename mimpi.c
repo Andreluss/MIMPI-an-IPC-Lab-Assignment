@@ -52,35 +52,105 @@ typedef struct {
 typedef struct {
     mimpi_metadata_t metadata;
     void* data;
-} received_message_t;
-static void received_message_destroy(received_message_t* message) {
+} message_t;
+static void message_destroy_and_free(message_t* message) {
     if (message == NULL) return;
     free(message->data);
     free(message);
 }
-static void received_message_init(received_message_t* message, mimpi_metadata_t metadata, void* data) {
+static void message_init(message_t* message, mimpi_metadata_t metadata, void* data) {
     if (message == NULL) return;
     message->metadata = metadata;
     message->data = data;
 }
 
-struct received_messages_node_t {
-    received_message_t* message;
-    struct received_messages_node_t* next;
+typedef struct message_list_node message_list_node;
+struct message_list_node {
+    message_t* message;
+    message_list_node* next;
 };
-typedef struct received_messages_node_t received_messages_node_t;
 
-static received_messages_node_t* received_messages_list_head = NULL;
-static received_messages_node_t* received_messages_list_tail = NULL;
+typedef struct message_list message_list;
+struct message_list {
+    message_list_node* head;
+    message_list_node* tail;
+};
+static void message_list_init(message_list* list) {
+    list->head = NULL;
+    list->tail = NULL;
+}
+static void message_list_destroy(message_list* list) {
+    for (message_list_node* curr = list->head; curr != NULL;) {
+        message_list_node* next = curr->next;
+        free(curr->message);
+        free(curr);
+        curr = next;
+    }
+    list->head = list->tail = NULL;
+}
+
+/// @brief Returns true if the given metadata matches the source, tag and count (tag can be ANY_TAG).
+static bool metadata_matches_params(mimpi_metadata_t *metadata, int source, int tag, int count) {
+    return metadata &&
+           metadata->count == count && metadata->source == source &&
+           (metadata->tag == tag || tag == MIMPI_ANY_TAG);
+}
+
+/// @brief Pushes a message to the back of the list.
+/// @param message The message to be pushed.
+/// Notice: the function take the ownership of the message pointer.
+static void message_list_push(message_list* list, message_t* message) {
+    message_list_node* new_node = malloc(sizeof(message_list_node));
+    new_node->message = message;
+    new_node->next = NULL;
+    if (list->head == NULL) {
+        list->head = new_node;
+    } else {
+        list->tail->next = new_node;
+    }
+    list->tail = new_node;
+}
+
+/// @brief Finds a message in the list that matches the given parameters and pops it from the list.
+/// Notice: the function returns the ownership of the message pointer to the caller.
+/// @return The message that matches the given parameters, or NULL if no such message exists.
+static message_t* message_list_find_and_pop(message_list* list, int count, int source, int tag) {
+    message_list_node* prev = NULL;
+    message_list_node* curr = list->head;
+    while (curr != NULL) {
+        if (metadata_matches_params(&curr->message->metadata, source, tag, count)) {
+            // Found the message.
+            if (prev == NULL) {
+                // The message is at the head of the list.
+                list->head = curr->next;
+            } else {
+                // The message is in the middle of the list.
+                prev->next = curr->next;
+            }
+            if (curr == list->tail) {
+                // The message is at the tail of the list.
+                list->tail = prev;
+            }
+            message_t* message = curr->message;
+            free(curr);
+            return message;
+        }
+        prev = curr;
+        curr = curr->next;
+    }
+    return NULL;
+}
+//static message_list_node* received_messages_list_head = NULL;
+//static message_list_node* received_messages_list_tail = NULL;
 
 /// @brief Thread function that continuously reads from pipe _source -> mimpi.rank.
 static void* receiver_thread(void* _source);
 
+typedef enum mimpi_state_t mimpi_state_t;
 enum mimpi_state_t {
     MIMPI_STATE_RUN,
     MIMPI_STATE_WAIT,
 };
-typedef enum mimpi_state_t mimpi_state_t;
 
 static struct {
     bool enable_deadlock_detection;
@@ -90,22 +160,20 @@ static struct {
     // This array contains helper threads that continuously read from 'input' channels (pipes).
     pthread_t* receiver_threads;
 
-    // <list of messages received from other processes is defined above>
+    // list of messages received from other processes is defined above
+    message_list ml; // ml for message list :P
 
     // This mutex is used to synchronize the main thread and the receiver threads
     // when accessing commonly used data from here.
     pthread_mutex_t mutex;
 
-    bool is_waiting_on_semaphore;
-    int group_synced_count;
     // This semaphore is used to make the MIMPI_Recv wait until the message arrives.
     sem_t semaphore; // destroy in MIMPI_Finalize()
     int recv_source;
     int recv_tag;
     int recv_count;
-    received_message_t* received_message;
+    message_t* received_message;
     mimpi_state_t state;
-    int open_channels;
     bool* dead; // dead[i] = true iff process with rank i has already escaped MPI block.
 } mimpi;
 
@@ -117,11 +185,10 @@ static void mimpi_init(int n, int rank, bool enable_deadlock_detection) {
     ASSERT_ZERO(sem_init(&mimpi.semaphore, 0, 0)); // semaphore shared between processes
     mimpi.received_message = NULL;
     mimpi.receiver_threads = malloc(mimpi.n * sizeof(pthread_t));
-    mimpi.is_waiting_on_semaphore = false;
-    mimpi.group_synced_count = 0;
     mimpi.state = MIMPI_STATE_RUN;
 
-    mimpi.open_channels = mimpi.n - 1;
+    message_list_init(&mimpi.ml);
+
     mimpi.dead = calloc(mimpi.n, sizeof(bool)); // all false
 
     for (int source_rank = 0; source_rank < mimpi.n; source_rank++) {
@@ -138,69 +205,14 @@ static void mimpi_destroy() {
     free(mimpi.receiver_threads);
     ASSERT_ZERO(pthread_mutex_destroy(&mimpi.mutex));
     ASSERT_ZERO(sem_destroy(&mimpi.semaphore));
-    received_message_destroy(mimpi.received_message);
+    message_destroy_and_free(mimpi.received_message);
 
     // Destroy the list
-    for (received_messages_node_t* curr = received_messages_list_head; curr != NULL;) {
-        received_messages_node_t* next = curr->next;
-        received_message_destroy(curr->message);
-        free(curr);
-        curr = next;
-    }
+    message_list_destroy(&mimpi.ml);
     free(mimpi.dead);
 }
 
-/// @brief Returns true if the given metadata matches the source, tag and count (tag can be ANY_TAG).
-static bool metadata_matches_params(mimpi_metadata_t *metadata, int source, int tag, int count) {
-    return metadata &&
-           metadata->count == count && metadata->source == source &&
-           (metadata->tag == tag || tag == MIMPI_ANY_TAG);
-}
 
-/// @brief Pushes a message to the back of the list.
-/// @param message The message to be pushed.
-/// Notice: the function take the ownership of the message pointer.
-static void message_list_push(received_message_t* message) {
-    received_messages_node_t* new_node = malloc(sizeof(received_messages_node_t));
-    new_node->message = message;
-    new_node->next = NULL;
-    if (received_messages_list_head == NULL) {
-        received_messages_list_head = new_node;
-    } else {
-        received_messages_list_tail->next = new_node;
-    }
-    received_messages_list_tail = new_node;
-}
-
-/// @brief Finds a message in the list that matches the given parameters and pops it from the list.
-/// Notice: the function returns the ownership of the message pointer to the caller.
-/// @return The message that matches the given parameters, or NULL if no such message exists.
-static received_message_t* message_list_find_and_pop(int count, int source, int tag) {
-    received_messages_node_t* prev = NULL;
-    received_messages_node_t* curr = received_messages_list_head;
-    while (curr != NULL) {
-        if (metadata_matches_params(&curr->message->metadata, source, tag, count)) {
-            // Found the message.
-            if (prev == NULL) {
-                // The message is at the head of the list.
-                received_messages_list_head = curr->next;
-            } else {
-                // The message is in the middle of the list.
-                prev->next = curr->next;
-            }
-            if (curr == received_messages_list_tail) {
-                // The message is at the tail of the list.
-                received_messages_list_tail = prev;
-            }
-            received_message_t* message = curr->message;
-            free(curr);
-            return message;
-        }
-        prev = curr;
-        curr = curr->next;
-    }
-    return NULL;
-}
 
 /// @brief Sends all @ref bytes_to_write bytes of @ref data to the file descriptor @ref fd.
 /// @return MIMPI return code:
@@ -219,9 +231,7 @@ static MIMPI_Retcode complete_chrecv(int fd, void* data, size_t bytes_to_read);
 
 static void set_wait_state(int source, int tag, int count);
 
-static void set_run_state_with_message(received_message_t *msg);
-
-void clear_wait_state();
+static void set_run_state_with_message(message_t *msg);
 
 int get_parent(int msg_root);
 
@@ -229,7 +239,7 @@ int get_left_child(int msg_root);
 
 int get_right_child(int msg_root);
 
-static void set_received_message(received_message_t *message);
+static void set_received_message(message_t *message);
 
 static MIMPI_Retcode complete_chsend(int fd, const void *data, size_t bytes_to_write) {
     while (bytes_to_write > 0) {
@@ -292,7 +302,7 @@ static void merge_data_inplace(void* main_data,
     }
 }
 
-received_message_t* try_read_message(int read_fd) {
+message_t* try_read_message(int read_fd) {
     mimpi_metadata_t metadata;
     MIMPI_Retcode metadata_read_result = complete_chrecv(read_fd, &metadata, sizeof(mimpi_metadata_t));
     if (metadata_read_result != MIMPI_SUCCESS) return NULL;
@@ -307,31 +317,21 @@ received_message_t* try_read_message(int read_fd) {
         }
     }
 
-    received_message_t* message = malloc(sizeof(received_message_t));
-    received_message_init(message, metadata, data);
+    message_t* message = malloc(sizeof(message_t));
+    message_init(message, metadata, data);
     return message;
 }
 
-void clear_wait_state() { // DON't use
-//    ASSERT_ZERO(pthread_mutex_lock(&mimpi.mutex));
-    mimpi.state = MIMPI_STATE_RUN;
-    mimpi.is_waiting_on_semaphore = false;
-//    ASSERT_ZERO(pthread_mutex_unlock(&mimpi.mutex));
-}
-
 void set_wait_state(int source, int tag, int count) {
-//    ASSERT_ZERO(pthread_mutex_lock(&mimpi.mutex));
     mimpi.state = MIMPI_STATE_WAIT;
-    received_message_destroy(mimpi.received_message);
+    message_destroy_and_free(mimpi.received_message);
     mimpi.received_message = NULL;
-//    mimpi.is_waiting_on_semaphore = true;
     mimpi.recv_source = source;
     mimpi.recv_tag = tag; // possibly <= 0
     mimpi.recv_count = count;
-//    ASSERT_ZERO(pthread_mutex_unlock(&mimpi.mutex));
 }
 
-static void set_run_state_with_message(received_message_t *msg) {
+static void set_run_state_with_message(message_t *msg) {
     mimpi.state = MIMPI_STATE_RUN;
     set_received_message(msg);
 }
@@ -342,7 +342,7 @@ static void* receiver_thread(void* _source) {
     int read_fd = get_pipe_read_fd(source_rank, mimpi.rank, mimpi.n);
 
     while (true) {
-        received_message_t* new_msg = try_read_message(read_fd);
+        message_t* new_msg = try_read_message(read_fd);
         if (new_msg == NULL) {
             d3g prt("Rank %d: READ ERROR from %d\n", mimpi.rank, source_rank);
             break;
@@ -365,7 +365,7 @@ static void* receiver_thread(void* _source) {
             d3g prt("Rank %d: new_msg (%d, %d, %d) doesn't match wait params (%d, %d, %d)\n", mimpi.rank,
                    new_msg->metadata.count, new_msg->metadata.source, new_msg->metadata.tag,
                    mimpi.recv_count, mimpi.recv_source, mimpi.recv_tag);
-            message_list_push(new_msg);
+            message_list_push(&mimpi.ml, new_msg);
         }
         ASSERT_ZERO(pthread_mutex_unlock(&mimpi.mutex));
     }
@@ -382,10 +382,10 @@ static void* receiver_thread(void* _source) {
     return NULL;
 }
 
-static void set_received_message(received_message_t *message) {
+static void set_received_message(message_t *message) {
     d2g prt("Setting received message (rank %d)\n", mimpi.rank);
     if (mimpi.received_message != NULL) {
-        received_message_destroy(mimpi.received_message);
+        message_destroy_and_free(mimpi.received_message);
     }
     mimpi.received_message = message;
 }
@@ -523,11 +523,11 @@ MIMPI_Retcode MIMPI_Recv(
 
     // (1) Check if the message is already in the list of received messages.
     ASSERT_ZERO(pthread_mutex_lock(&mimpi.mutex));
-    received_message_t* message = message_list_find_and_pop(count, source, tag);
+    message_t* message = message_list_find_and_pop(&mimpi.ml, count, source, tag);
     if (message) {
         // If the message is already in the list, then we can return it.
         memcpy(data, message->data, count);
-        received_message_destroy(message);
+        message_destroy_and_free(message);
         ASSERT_ZERO(pthread_mutex_unlock(&mimpi.mutex));
         return MIMPI_SUCCESS;
     }
@@ -562,7 +562,7 @@ MIMPI_Retcode MIMPI_Recv(
         // Case 2: The message arrived.
         d3g prt("Rank %d: Message (%d, src: %d, %d) was received.\n", mimpi.rank, count, source, tag);
         memcpy(data, message->data, count);
-        received_message_destroy(message);
+        message_destroy_and_free(message);
 
         return MIMPI_SUCCESS;
     }
