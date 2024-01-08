@@ -129,6 +129,7 @@ static struct {
     received_message_t* received_message;
     mimpi_state_t state;
     int open_channels;
+    bool* dead; // dead[i] = true iff process with rank i has already escaped MPI block.
 } mimpi;
 
 static void mimpi_init(int n, int rank, bool enable_deadlock_detection) {
@@ -143,6 +144,9 @@ static void mimpi_init(int n, int rank, bool enable_deadlock_detection) {
     mimpi.group_synced_count = 0;
     mimpi.state = MIMPI_STATE_RUN;
 
+    mimpi.open_channels = mimpi.n - 1;
+    mimpi.dead = calloc(mimpi.n, sizeof(bool)); // all false
+
     for (int source_rank = 0; source_rank < mimpi.n; source_rank++) {
         if (source_rank == mimpi.rank)
             continue;
@@ -152,7 +156,6 @@ static void mimpi_init(int n, int rank, bool enable_deadlock_detection) {
 
         ASSERT_ZERO(pthread_create(&mimpi.receiver_threads[source_rank], NULL, receiver_thread, thread_arg));
     }
-    mimpi.open_channels = mimpi.n - 1;
 }
 static void mimpi_destroy() {
     free(mimpi.receiver_threads);
@@ -167,6 +170,7 @@ static void mimpi_destroy() {
         free(curr);
         curr = next;
     }
+    free(mimpi.dead);
 }
 
 /// @brief Returns true if the given metadata matches the source, tag and count (tag can be ANY_TAG).
@@ -395,7 +399,7 @@ static void* receiver_thread(void* _source) {
     }
 
     ASSERT_ZERO(pthread_mutex_lock(&mimpi.mutex));
-    // dead[source_rank] = true; TODO?
+    mimpi.dead[source_rank] = true; // this info will prevent *future* MIMPI_Recv from waiting for source_rank.
     if (mimpi.state == MIMPI_STATE_WAIT && mimpi.recv_source == source_rank) {
         d3g prt("Rank %d: ERROR [REMOTE_FINISHED] after wait for msg from %d\n", mimpi.rank, source_rank);
         set_run_state_with_message(NULL);
@@ -415,11 +419,13 @@ static void set_received_message(received_message_t *message) {
 }
 
 void MIMPI_Init(bool enable_deadlock_detection) {
+    d3g prt("Rank %d: *started* initializing\n", mimpi.rank);
     channels_init();
 
     // (1) Get world size from env
     assert(getenv("MIMPI_N") != NULL);
     int n = atoi(getenv("MIMPI_N"));
+    d3g prt("Rank %d: n = %d\n", mimpi.rank, n);
 
     // (2) Get world rank from env
     pid_t pid = getpid();
@@ -427,14 +433,16 @@ void MIMPI_Init(bool enable_deadlock_detection) {
     get_mimpi_rank_for_pid_envariable_name(envariable_name, pid);
     assert(getenv(envariable_name) != NULL);
     int rank = atoi(getenv(envariable_name));
+    d3g prt("Rank %d sTIll HERE pid=%d\n", rank, getpid());
 
     // (3) Create helper threads and structures.
     mimpi_init(n, rank, enable_deadlock_detection);
+
+    d3g prt("Rank %d: successfully INITIALIZED\n", mimpi.rank);
 }
 
 void MIMPI_Finalize() {
-    d2g prt("--- rank %d is finalizing\n", mimpi.rank);
-    dbg prt("Process with rank %d is finalizing\n", mimpi.rank);
+    d2g prt("Rank %d: started finalizing\n", mimpi.rank);
     // MAYBE_TODO send message informing of death?
 
     // (1) Close all channels (pipes) related to this process (this should stop the receiver threads).
@@ -448,7 +456,7 @@ void MIMPI_Finalize() {
     }
     d2g {
         prt("Process with rank %d closed all channels\n", mimpi.rank);
-        print_open_descriptors(mimpi.n);
+//        print_open_descriptors(mimpi.n);
     };
 
     // (2) Now wait for the helper threads to finish
@@ -536,7 +544,13 @@ MIMPI_Retcode MIMPI_Recv(
         return MIMPI_SUCCESS;
     }
     else {
-        // Otherwise, we should wait for the message to arrive.
+        // Otherwise we should wait for the message to arrive.
+        // If source has already escaped MPI block, then we should return an error.
+        if (mimpi.dead[source]) {
+            dbg prt("Rank %d: Message (%d, src: %d, %d) not received [REMOTE_FINISHED] because source is DEAD.\n", mimpi.rank, count, source, tag);
+            ASSERT_ZERO(pthread_mutex_unlock(&mimpi.mutex));
+            return MIMPI_ERROR_REMOTE_FINISHED;
+        }
         set_wait_state(source, tag, count);
         ASSERT_ZERO(pthread_mutex_unlock(&mimpi.mutex));
 
@@ -553,11 +567,12 @@ MIMPI_Retcode MIMPI_Recv(
 
         // Case 1: An error occurred.
         if (message == NULL) {
-            dbg prt("Rank %d: Message (%d, src: %d, %d) was not received [REMOTE_FINISHED].\n", mimpi.rank, count, source, tag);
+            d3g prt("Rank %d: Message (%d, src: %d, %d) was not received [REMOTE_FINISHED].\n", mimpi.rank, count, source, tag);
             return MIMPI_ERROR_REMOTE_FINISHED;
         }
 
         // Case 2: The message arrived.
+        d3g prt("Rank %d: Message (%d, src: %d, %d) was received.\n", mimpi.rank, count, source, tag);
         memcpy(data, message->data, count);
         received_message_destroy(message);
 
@@ -603,6 +618,7 @@ int get_left_child(int msg_root) {
 }
 
 int get_parent(int msg_root) {
+    if (mimpi.rank == msg_root) return -1;
     if (msg_root == 0)
         return (mimpi.rank - 1) / 2;
 

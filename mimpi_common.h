@@ -78,10 +78,20 @@ void get_pipe_fd_to_string(int fd, int n, char *buf, int buf_size);
 /* ------------------ Debug macros ----------------- */
 // Different levels of debug:
 #define dbg if (false)
-#define d2g if (true)
-#define d3g if (true)
+#define ddd 1
+#define d2g if (ddd)
+#define d3g if (ddd)
 
 #include <stdio.h>
+#define prt(fmt, ...) \
+    do { \
+        char const *colors[] = {"\033[31m",  "\033[32m", "\033[33m", "\033[34m", "\033[35m", "\033[36m"}; \
+        int const colors_len = sizeof(colors) / sizeof(colors[0]);        \
+        int const color = rand() % colors_len; \
+        fprintf(stderr, "[%s][%d]: %s" fmt "\033[0m", __FILE__, __LINE__, colors[color], __VA_ARGS__);    \
+        fflush(stderr);              \
+    } while (0)
+/*
 #define prt(...) \
     do { \
         char const *colors[] = {"\033[31m",  "\033[32m", "\033[33m", "\033[34m", "\033[35m", "\033[36m"}; \
@@ -91,7 +101,7 @@ void get_pipe_fd_to_string(int fd, int n, char *buf, int buf_size);
         fprintf(stderr, __VA_ARGS__);                                     \
         fprintf(stderr, "\033[0m"); \
         fflush(stderr); \
-    } while (0)
+    } while (0)*/
 
 /*
 #define prt2(...) \
