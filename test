@@ -8,9 +8,7 @@ self_test () {
     tmp_file=`mktemp`
     echo "$cmd" > $tmp_file
     echo "=====================================================================" >> $tmp_file
-    echo "COMMAND: $cmd"
-    bash -c "$cmd" | tee -a $tmp_file
-    diff $1 $tmp_file
+    bash -c "$cmd" >> $tmp_file && diff $1 $tmp_file
 }
 
 SUCCESSES_NUM=0
