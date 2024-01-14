@@ -103,7 +103,7 @@ int get_pipe_read_fd(int i, int j, int n) {
 }
 
 void get_mimpi_rank_for_pid_envariable_name(char *buf, int pid) {
-    ASSERT_SPRINTF_OK(sprintf(buf, "MIMPI_RANK_%d", pid)); // TODO error check?
+    ASSERT_SPRINTF_OK(sprintf(buf, "MIMPI_RANK_%d", pid)); 
 }
 
 void get_pipe_fd_to_string(int fd, int n, char *buf, int buf_size) {

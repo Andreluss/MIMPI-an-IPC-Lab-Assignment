@@ -65,9 +65,6 @@ void get_mimpi_rank_for_pid_envariable_name(char *buf, int pid);
             );                                                                             \
     } while(0)
 
-
-
-
 /* -------------- Debug functions ---------------- */
 
 // Print (to stderr) information about all open descriptors in current process.
@@ -92,41 +89,6 @@ void get_pipe_fd_to_string(int fd, int n, char *buf, int buf_size);
         fprintf(stderr, "[%s][%d]: %s" fmt "\033[0m", __FILE__, __LINE__, colors[color], __VA_ARGS__);    \
         fflush(stderr);              \
     } while (0)
-/*
-#define prt(...) \
-    do { \
-        char const *colors[] = {"\033[31m",  "\033[32m", "\033[33m", "\033[34m", "\033[35m", "\033[36m"}; \
-        int const colors_len = sizeof(colors) / sizeof(colors[0]);        \
-        int const color = rand() % colors_len; \
-        fprintf(stderr, "[%s][%d]: %s", __FILE__, __LINE__, colors[color]);         \
-        fprintf(stderr, __VA_ARGS__);                                     \
-        fprintf(stderr, "\033[0m"); \
-        fflush(stderr); \
-    } while (0)*/
 
-/*
-#define prt2(...) \
-    do { \
-        char const *colors[] = {RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN}; \
-        int const colors_len = sizeof(colors) / sizeof(colors[0]);        \
-        int const color = rand() % colors_len; \
-        fprintf(stderr, "%s", colors[color]);                             \
-        fprintf(stderr, "[debug]: ");         \
-        fprintf(stderr, RESET); \
-        fprintf(stderr, __VA_ARGS__);                                     \
-        fflush(stderr); \
-    } while (0)
-
-#define prt3(...) \
-    do { \
-        char const *colors[] = {RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN}; \
-        int const colors_len = sizeof(colors) / sizeof(colors[0]);        \
-        int const color = rand() % colors_len;                            \
-        fprintf(stderr, "%s", colors[color]);                             \
-        fprintf(stderr, __VA_ARGS__);                                     \
-        fprintf(stderr, RESET);                                           \
-        fflush(stderr); \
-    } while (0)
-*/
 
 #endif // MIMPI_COMMON_H
