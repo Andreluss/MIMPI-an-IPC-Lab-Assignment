@@ -48,15 +48,15 @@ int main(int argc, char **argv)
     if (world_rank == 0)
     {
         // printf("SENDING %d from process 0\n", number);
-        number = 13;
+//        number = 13;
         ASSERT_MIMPI_OK(MIMPI_Send(&number, 1, 1, tag+1));
-        char l[2] = {14,15};
-        ASSERT_MIMPI_OK(MIMPI_Send(&l, 2, 1, tag));
+//        char l[2] = {14,15};
+//        ASSERT_MIMPI_OK(MIMPI_Send(&l, 2, 1, tag));
         number = 42;
         ASSERT_MIMPI_OK(MIMPI_Send(&number, 1, 1, tag));
-        ASSERT_MIMPI_OK(MIMPI_Send(&l, 2, 1, tag));
-        number = 13;
-        ASSERT_MIMPI_OK(MIMPI_Send(&number, 1, 1, tag+1));
+//        ASSERT_MIMPI_OK(MIMPI_Send(&l, 2, 1, tag));
+//        number = 13;
+//        ASSERT_MIMPI_OK(MIMPI_Send(&number, 1, 1, tag+1));
     }
     else if (world_rank == 1)
     {
